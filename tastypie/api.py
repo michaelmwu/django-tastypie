@@ -1,3 +1,4 @@
+import inspect
 import warnings
 from django.conf.urls.defaults import *
 from django.core.exceptions import ImproperlyConfigured
@@ -28,12 +29,15 @@ class Api(object):
     
     def register(self, resource, canonical=True):
         """
-        Registers an instance of a ``Resource`` subclass with the API.
+        Registers a subclass or instance of ``Resource`` with the API.
         
         Optionally accept a ``canonical`` argument, which indicates that the
         resource being registered is the canonical variant. Defaults to
         ``True``.
         """
+        if inspect.isclass(resource):
+            resource = resource()
+        
         resource_name = getattr(resource._meta, 'resource_name', None)
         
         if resource_name is None:

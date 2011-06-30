@@ -251,9 +251,9 @@ class ResourceSerializationTestCase(TestCase):
     def setUp(self):
         super(ResourceSerializationTestCase, self).setUp()
         self.resource = NoteResource()
-        self.obj_list = [self.resource.full_dehydrate(obj=obj) for obj in self.resource.obj_get_list()]
+        self.obj_list = [self.resource.full_dehydrate(self.resource.build_bundle(obj=obj)) for obj in self.resource.obj_get_list()]
         self.another_resource = AnotherNoteResource()
-        self.another_obj_list = [self.another_resource.full_dehydrate(obj=obj) for obj in self.another_resource.obj_get_list()]
+        self.another_obj_list = [self.another_resource.full_dehydrate(self.resource.build_bundle(obj=obj)) for obj in self.another_resource.obj_get_list()]
     
     def test_from_form(self):
         request = HttpRequest()

@@ -70,6 +70,7 @@ class ResourceOptions(object):
     excludes = []
     include_resource_uri = True
     include_absolute_url = False
+    always_return_data = False
     
     def __new__(cls, meta=None):
         overrides = {}
@@ -110,7 +111,10 @@ class DeclarativeMetaclass(type):
             pass
         
         for field_name, obj in attrs.items():
-            if isinstance(obj, ApiField):
+            # Look for ``dehydrated_type`` instead of doing ``isinstance``,
+            # which can break down if Tastypie is re-namespaced as something
+            # else.
+            if hasattr(obj, 'dehydrated_type'):
                 field = attrs.pop(field_name)
                 declared_fields[field_name] = field
         
@@ -625,17 +629,15 @@ class Resource(object):
     
     # Data preparation.
     
-    def full_dehydrate(self, obj):
+    def full_dehydrate(self, bundle):
         """
-        Given an object instance, extract the information from it to populate
-        the resource.
+        Given a bundle with an object instance, extract the information from it
+        to populate the resource.
         """
-        bundle = Bundle(obj=obj)
-        
         # Dehydrate each field.
         for field_name, field_object in self.fields.items():
             # A touch leaky but it makes URI resolution work.
-            if isinstance(field_object, RelatedField):
+            if getattr(field_object, 'dehydrated_type', None) == 'related':
                 field_object.api_name = self._meta.api_name
                 field_object.resource_name = self._meta.resource_name
                 
@@ -839,6 +841,17 @@ class Resource(object):
         allowed = set(self._meta.list_allowed_methods + self._meta.detail_allowed_methods)
         return 'delete' in allowed
     
+    def apply_filters(self, request, applicable_filters):
+        """
+        A hook to alter how the filters are applied to the object list.
+        
+        This needs to be implemented at the user level.
+        
+        ``ModelResource`` includes a full working version specific to Django's
+        ``Models``.
+        """
+        raise NotImplementedError()
+    
     def obj_get_list(self, request=None, **kwargs):
         """
         Fetches the list of objects available on the resource.
@@ -935,7 +948,7 @@ class Resource(object):
         """
         raise NotImplementedError()
     
-    def create_response(self, request, data):
+    def create_response(self, request, data, response_class=HttpResponse, **response_kwargs):
         """
         Extracts the common "which-format/serialize/return-response" cycle.
         
@@ -943,7 +956,7 @@ class Resource(object):
         """
         desired_format = self.determine_format(request)
         serialized = self.serialize(request, data, desired_format)
-        return HttpResponse(content=serialized, content_type=build_content_type(desired_format))
+        return response_class(content=serialized, content_type=build_content_type(desired_format), **response_kwargs)
     
     def is_valid(self, bundle, request=None):
         """
@@ -1000,7 +1013,8 @@ class Resource(object):
         to_be_serialized = paginator.page()
         
         # Dehydrate the bundles in preparation for serialization.
-        to_be_serialized['objects'] = [self.full_dehydrate(obj=obj) for obj in to_be_serialized['objects']]
+        bundles = [self.build_bundle(obj=obj, request=request) for obj in to_be_serialized['objects']]
+        to_be_serialized['objects'] = [self.full_dehydrate(bundle) for bundle in bundles]
         to_be_serialized = self.alter_list_data_to_serialize(request, to_be_serialized)
         return self.create_response(request, to_be_serialized)
     
@@ -1020,7 +1034,8 @@ class Resource(object):
         except MultipleObjectsReturned:
             return HttpMultipleChoices("More than one resource is found at this URI.")
         
-        bundle = self.full_dehydrate(obj)
+        bundle = self.build_bundle(obj=obj, request=request)
+        bundle = self.full_dehydrate(bundle)
         bundle = self.alter_detail_data_to_serialize(request, bundle)
         return self.create_response(request, bundle)
     
@@ -1031,7 +1046,11 @@ class Resource(object):
         Calls ``delete_list`` to clear out the collection then ``obj_create``
         with the provided the data to create the new collection.
         
-        Return ``HttpNoContent`` (204 No Content).
+        Return ``HttpNoContent`` (204 No Content) if
+        ``Meta.always_return_data = False`` (default).
+        
+        Return ``HttpAccepted`` (202 Accepted) if
+        ``Meta.always_return_data = True``.
         """
         deserialized = self.deserialize(request, request.raw_post_data, format=request.META.get('CONTENT_TYPE', 'application/json'))
         deserialized = self.alter_deserialized_list_data(request, deserialized)
@@ -1053,10 +1072,16 @@ class Resource(object):
                 self.rollback(bundles_seen)
                 raise
             
-            self.obj_create(bundle, request=request)
+            self.obj_create(bundle, request=request, **kwargs)
             bundles_seen.append(bundle)
         
-        return HttpNoContent()
+        if not self._meta.always_return_data:
+            return HttpNoContent()
+        else:
+            to_be_serialized = {}
+            to_be_serialized['objects'] = [self.full_dehydrate(bundle) for bundle in bundles_seen]
+            to_be_serialized = self.alter_list_data_to_serialize(request, to_be_serialized)
+            return self.create_response(request, to_be_serialized, response_class=HttpAccepted)
     
     def put_detail(self, request, **kwargs):
         """
@@ -1067,7 +1092,15 @@ class Resource(object):
         ``obj_create`` if the object does not already exist.
         
         If a new resource is created, return ``HttpCreated`` (201 Created).
-        If an existing resource is modified, return ``HttpNoContent`` (204 No Content).
+        If ``Meta.always_return_data = True``, there will be a populated body
+        of serialized data.
+        
+        If an existing resource is modified and
+        ``Meta.always_return_data = False`` (default), return ``HttpNoContent``
+        (204 No Content).
+        If an existing resource is modified and
+        ``Meta.always_return_data = True``, return ``HttpAccepted`` (202
+        Accepted).
         """
         deserialized = self.deserialize(request, request.raw_post_data, format=request.META.get('CONTENT_TYPE', 'application/json'))
         deserialized = self.alter_deserialized_detail_data(request, deserialized)
@@ -1075,11 +1108,24 @@ class Resource(object):
         self.is_valid(bundle, request)
         
         try:
-            updated_bundle = self.obj_update(bundle, request=request, pk=kwargs.get('pk'))
-            return HttpNoContent()
+            updated_bundle = self.obj_update(bundle, request=request, **kwargs)
+            
+            if not self._meta.always_return_data:
+                return HttpNoContent()
+            else:
+                updated_bundle = self.full_dehydrate(updated_bundle)
+                updated_bundle = self.alter_detail_data_to_serialize(request, updated_bundle)
+                return self.create_response(request, updated_bundle, response_class=HttpAccepted)
         except (NotFound, MultipleObjectsReturned):
-            updated_bundle = self.obj_create(bundle, request=request, pk=kwargs.get('pk'))
-            return HttpCreated(location=self.get_resource_uri(updated_bundle))
+            updated_bundle = self.obj_create(bundle, request=request, **kwargs)
+            location = self.get_resource_uri(updated_bundle)
+            
+            if not self._meta.always_return_data:
+                return HttpCreated(location=location)
+            else:
+                updated_bundle = self.full_dehydrate(updated_bundle)
+                updated_bundle = self.alter_detail_data_to_serialize(request, updated_bundle)
+                return self.create_response(request, updated_bundle, response_class=HttpCreated, location=location)
     
     def post_list(self, request, **kwargs):
         """
@@ -1089,13 +1135,22 @@ class Resource(object):
         with the new resource's location.
         
         If a new resource is created, return ``HttpCreated`` (201 Created).
+        If ``Meta.always_return_data = True``, there will be a populated body
+        of serialized data.
         """
         deserialized = self.deserialize(request, request.raw_post_data, format=request.META.get('CONTENT_TYPE', 'application/json'))
         deserialized = self.alter_deserialized_detail_data(request, deserialized)
         bundle = self.build_bundle(data=dict_strip_unicode_keys(deserialized), request=request)
         self.is_valid(bundle, request)
-        updated_bundle = self.obj_create(bundle, request=request)
-        return HttpCreated(location=self.get_resource_uri(updated_bundle))
+        updated_bundle = self.obj_create(bundle, request=request, **kwargs)
+        location = self.get_resource_uri(updated_bundle)
+        
+        if not self._meta.always_return_data:
+            return HttpCreated(location=location)
+        else:
+            updated_bundle = self.full_dehydrate(updated_bundle)
+            updated_bundle = self.alter_detail_data_to_serialize(request, updated_bundle)
+            return self.create_response(request, updated_bundle, response_class=HttpCreated, location=location)
     
     def post_detail(self, request, **kwargs):
         """
@@ -1171,7 +1226,8 @@ class Resource(object):
         for pk in obj_pks:
             try:
                 obj = self.obj_get(request, pk=pk)
-                bundle = self.full_dehydrate(obj)
+                bundle = self.build_bundle(obj=obj, request=request)
+                bundle = self.full_dehydrate(bundle)
                 objects.append(bundle)
             except ObjectDoesNotExist:
                 not_found.append(pk)
@@ -1257,8 +1313,10 @@ class ModelResource(Resource):
             result = DateTimeField
         elif f.get_internal_type() in ('BooleanField', 'NullBooleanField'):
             result = BooleanField
-        elif f.get_internal_type() in ('DecimalField', 'FloatField'):
+        elif f.get_internal_type() in ('FloatField',):
             result = FloatField
+        elif f.get_internal_type() in ('DecimalField',):
+            result = DecimalField
         elif f.get_internal_type() in ('IntegerField', 'PositiveIntegerField', 'PositiveSmallIntegerField', 'SmallIntegerField'):
             result = IntegerField
         elif f.get_internal_type() in ('FileField', 'ImageField'):
@@ -1487,6 +1545,15 @@ class ModelResource(Resource):
         
         return obj_list.order_by(*order_by_args)
     
+    def apply_filters(self, request, applicable_filters):
+        """
+        An ORM-specific implementation of ``apply_filters``.
+        
+        The default simply applies the ``applicable_filters`` as ``**kwargs``,
+        but should make it possible to do more advanced things.
+        """
+        return self.get_object_list(request).filter(**applicable_filters)
+        
     def get_object_list(self, request):
         """
         An ORM-specific implementation of ``get_object_list``.
@@ -1513,7 +1580,7 @@ class ModelResource(Resource):
         applicable_filters = self.build_filters(filters=filters)
         
         try:
-            base_object_list = self.get_object_list(request).filter(**applicable_filters)
+            base_object_list = self.apply_filters(request, applicable_filters)
             return self.apply_authorization_limits(request, base_object_list)
         except ValueError, e:
             raise BadRequest("Invalid resource lookup data provided (mismatched type).")
@@ -1644,11 +1711,11 @@ class ModelResource(Resource):
     def save_related(self, bundle):
         """
         Handles the saving of related non-M2M data.
-
+        
         Calling assigning ``child.parent = parent`` & then calling
         ``Child.save`` isn't good enough to make sure the ``parent``
         is saved.
-
+        
         To get around this, we go through all our related fields &
         call ``save`` on them if they have related, non-M2M data.
         M2M data is handled by the ``ModelResource.save_m2m`` method.
@@ -1656,24 +1723,27 @@ class ModelResource(Resource):
         for field_name, field_object in self.fields.items():
             if not getattr(field_object, 'is_related', False):
                 continue
-
+            
             if getattr(field_object, 'is_m2m', False):
                 continue
-
+            
             if not field_object.attribute:
                 continue
-
+            
+            if field_object.blank:
+                continue
+            
             # Get the object.
             try:
                 related_obj = getattr(bundle.obj, field_object.attribute)
             except ObjectDoesNotExist:
                 related_obj = None
-
+            
             # Because sometimes it's ``None`` & that's OK.
             if related_obj:
                 related_obj.save()
                 setattr(bundle.obj, field_object.attribute, related_obj)
-
+    
     def save_m2m(self, bundle):
         """
         Handles the saving of related M2M data.
@@ -1689,6 +1759,9 @@ class ModelResource(Resource):
                 continue
             
             if not field_object.attribute:
+                continue
+              
+            if field_object.readonly:
                 continue
             
             # Get the manager.

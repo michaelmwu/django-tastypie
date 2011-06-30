@@ -1,5 +1,6 @@
 import datetime
 from dateutil.tz import *
+from django.db import models
 from django.contrib.auth.models import User
 from django.test import TestCase
 from tastypie.bundle import Bundle
@@ -285,11 +286,15 @@ class DecimalFieldTestCase(TestCase):
         note = Note.objects.get(pk=1)
         bundle = Bundle(obj=note)
         
-        field_1 = DecimalField(default=20)
-        self.assertEqual(field_1.dehydrate(bundle), 20.0)
+        field_1 = DecimalField(default='20')
+        self.assertEqual(field_1.dehydrate(bundle), Decimal('20.0'))
         
-        field_2 = DecimalField(default=18.5)
+        field_2 = DecimalField(default='18.5')
         self.assertEqual(field_2.dehydrate(bundle), Decimal('18.5'))
+
+    def test_model_resource_correct_association(self):
+        api_field = ModelResource.api_field_from_django_field(models.DecimalField())
+        self.assertEqual(api_field, DecimalField)
 
 
 class ListFieldTestCase(TestCase):
@@ -594,6 +599,17 @@ class ToOneFieldTestCase(TestCase):
         self.assertEqual(field_3.full, False)
         self.assertEqual(field_3.readonly, False)
         self.assertEqual(field_3.help_text, 'Points to a User.')
+        
+        field_4 = ToOneField(UserResource, 'author', default=1, null=True, readonly=True, help_text="Points to a User.")
+        self.assertEqual(field_4.instance_name, None)
+        self.assertEqual(issubclass(field_4.to, UserResource), True)
+        self.assertEqual(field_4.attribute, 'author')
+        self.assertEqual(field_4.related_name, None)
+        self.assertEqual(field_4.null, True)
+        self.assertEqual(field_4.default, 1)
+        self.assertEqual(field_4.full, False)
+        self.assertEqual(field_4.readonly, True)
+        self.assertEqual(field_4.help_text, 'Points to a User.')
     
     def test_dehydrated_type(self):
         field_1 = ToOneField(UserResource, 'author')
@@ -735,6 +751,11 @@ class ToOneFieldTestCase(TestCase):
         field_11.instance_name = 'author'
         fk_bundle = field_11.hydrate(bundle)
         self.assertEqual(fk_bundle.obj.username, 'johndoe')
+        
+        # The readonly case.
+        field_12 = ToOneField(UserResource, 'author', readonly=True)
+        field_12.instance_name = 'author'
+        self.assertEqual(field_12.hydrate(bundle), None)
 
 
 class SubjectResource(ModelResource):
@@ -804,6 +825,17 @@ class ToManyFieldTestCase(TestCase):
         self.assertEqual(field_3.full, False)
         self.assertEqual(field_3.readonly, False)
         self.assertEqual(field_3.help_text, 'Points to many Subjects.')
+        
+        field_4 = ToManyField(SubjectResource, 'subjects', default=1, null=True, readonly=True, help_text='Points to many Subjects.')
+        self.assertEqual(field_4.instance_name, None)
+        self.assertEqual(issubclass(field_4.to, SubjectResource), True)
+        self.assertEqual(field_4.attribute, 'subjects')
+        self.assertEqual(field_4.related_name, None)
+        self.assertEqual(field_4.null, True)
+        self.assertEqual(field_4.default, 1)
+        self.assertEqual(field_4.full, False)
+        self.assertEqual(field_4.readonly, True)
+        self.assertEqual(field_4.help_text, 'Points to many Subjects.')
     
     def test_dehydrated_type(self):
         field_1 = ToManyField(SubjectResource, 'subjects')
@@ -956,3 +988,8 @@ class ToManyFieldTestCase(TestCase):
         self.assertEqual(subject_bundle_list_2[1].data['url'], u'/bar/')
         self.assertEqual(subject_bundle_list_2[1].obj.name, u'Bar')
         self.assertEqual(subject_bundle_list_2[1].obj.url, u'/bar/')
+        
+        # The readonly case.
+        field_9 = ToManyField(SubjectResource, 'subjects', readonly=True)
+        field_9.instance_name = 'm2m'
+        self.assertEqual(field_9.hydrate(bundle_6), None)

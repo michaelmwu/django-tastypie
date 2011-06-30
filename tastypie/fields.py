@@ -381,7 +381,7 @@ class RelatedField(ApiField):
     self_referential = False
     help_text = 'A related resource. Can be either a URI or set of nested resource data.'
     
-    def __init__(self, to, attribute, related_name=None, default=NOT_PROVIDED, null=False, blank=False, full=False, unique=False, help_text=None):
+    def __init__(self, to, attribute, related_name=None, default=NOT_PROVIDED, null=False, blank=False, readonly=False, full=False, unique=False, help_text=None):
         """
         Builds the field and prepares it to access to related data.
         
@@ -401,11 +401,21 @@ class RelatedField(ApiField):
         Optionally accepts a ``blank``, which indicated whether or not
         data may be omitted on the field. Defaults to ``False``.
         
+        Optionally accepts a ``readonly``, which indicates whether the field
+        is used during the ``hydrate`` or not. Defaults to ``False``.
+        
         Optionally accepts a ``full``, which indicates how the related
         ``Resource`` will appear post-``dehydrate``. If ``False``, the
         related ``Resource`` will appear as a URL to the endpoint of that
         resource. If ``True``, the result of the sub-resource's
         ``dehydrate`` will be included in full.
+        
+        Optionally accepts a ``unique``, which indicates if the field is a
+        unique identifier for the object.
+        
+        Optionally accepts ``help_text``, which lets you provide a
+        human-readable description of the field exposed at the schema level.
+        Defaults to the per-Field definition.
         """
         self.instance_name = None
         self._resource = None
@@ -415,8 +425,8 @@ class RelatedField(ApiField):
         self._default = default
         self.null = null
         self.blank = blank
+        self.readonly = readonly
         self.full = full
-        self.readonly = False
         self.api_name = None
         self.resource_name = None
         self.unique = unique
@@ -493,7 +503,8 @@ class RelatedField(ApiField):
             return related_resource.get_resource_uri(bundle)
         else:
             # ZOMG extra data and big payloads.
-            return related_resource.full_dehydrate(related_resource.instance)
+            bundle = related_resource.build_bundle(obj=related_resource.instance, request=bundle.request)
+            return related_resource.full_dehydrate(bundle)
     
     def build_related_resource(self, value, request=None):
         """
@@ -508,13 +519,14 @@ class RelatedField(ApiField):
             # We got a URI. Load the object and assign it.
             try:
                 obj = self.fk_resource.get_via_uri(value)
-                return self.fk_resource.full_dehydrate(obj)
+                bundle = self.fk_resource.build_bundle(obj=obj, request=request)
+                return self.fk_resource.full_dehydrate(bundle)
             except ObjectDoesNotExist:
                 raise ApiFieldError("Could not find the provided object via resource URI '%s'." % value)
         elif hasattr(value, 'items'):
             # Try to hydrate the data provided.
             value = dict_strip_unicode_keys(value)
-            self.fk_bundle = Bundle(data=value, request=request)
+            self.fk_bundle = self.fk_resource.build_bundle(data=value, request=request)
             
             # We need to check to see if updates are allowed on the FK
             # resource. If not, we'll just return a populated bundle instead
@@ -538,7 +550,8 @@ class RelatedField(ApiField):
             except MultipleObjectsReturned:
                 return self.fk_resource.full_hydrate(self.fk_bundle)
         elif hasattr(value, 'pk'):
-            return self.fk_resource.full_dehydrate(value)
+            bundle = self.fk_resource.build_bundle(obj=value, request=request)
+            return self.fk_resource.full_dehydrate(bundle)
         else:
             raise ApiFieldError("The '%s' field has was given data that was not a URI and not a dictionary-alike: %s." % (self.instance_name, value))
 
@@ -551,8 +564,8 @@ class ToOneField(RelatedField):
     """
     help_text = 'A single related resource. Can be either a URI or set of nested resource data.'
     
-    def __init__(self, to, attribute, related_name=None, default=NOT_PROVIDED, null=False, blank=False, full=False, unique=False, help_text=None):
-        super(ToOneField, self).__init__(to, attribute, related_name=related_name, default=default, null=null, blank=blank, full=full, unique=unique, help_text=help_text)
+    def __init__(self, to, attribute, related_name=None, default=NOT_PROVIDED, null=False, blank=False, readonly=False, full=False, unique=False, help_text=None):
+        super(ToOneField, self).__init__(to, attribute, related_name=related_name, default=default, null=null, blank=blank, readonly=readonly, full=full, unique=unique, help_text=help_text)
         self.fk_resource = None
     
     def dehydrate(self, bundle):
@@ -606,8 +619,8 @@ class ToManyField(RelatedField):
     is_m2m = True
     help_text = 'Many related resources. Can be either a list of URIs or list of individually nested resource data.'
     
-    def __init__(self, to, attribute, related_name=None, default=NOT_PROVIDED, null=False, blank=False, full=False, unique=False, help_text=None):
-        super(ToManyField, self).__init__(to, attribute, related_name=related_name, default=default, null=null, blank=blank, full=full, unique=unique, help_text=help_text)
+    def __init__(self, to, attribute, related_name=None, default=NOT_PROVIDED, null=False, blank=False, readonly=False, full=False, unique=False, help_text=None):
+        super(ToManyField, self).__init__(to, attribute, related_name=related_name, default=default, null=null, blank=blank, readonly=readonly, full=full, unique=unique, help_text=help_text)
         self.m2m_bundles = []
     
     def dehydrate(self, bundle):
@@ -645,6 +658,9 @@ class ToManyField(RelatedField):
         pass
     
     def hydrate_m2m(self, bundle):
+        if self.readonly:
+            return None
+        
         if bundle.data.get(self.instance_name) is None:
             if self.blank:
                 return []
@@ -700,40 +716,8 @@ class TimeField(ApiField):
 
     def hydrate(self, bundle):
         value = super(TimeField, self).hydrate(bundle)
+        
         if value and not isinstance(value, datetime.time):
             value = self.to_time(value)
+        
         return value
-
-
-
-
-# DRL_FIXME: Need more types?
-#
-#   + AutoField
-#   + BooleanField
-#   + CharField
-#   - CommaSeparatedIntegerField
-#   + DateField
-#   + DateTimeField
-#   + DecimalField
-#   - EmailField
-#   + FileField
-#   + FilePathField
-#   + FloatField
-#   + ImageField
-#   + IntegerField
-#   - IPAddressField
-#   + NullBooleanField
-#   + PositiveIntegerField
-#   + PositiveSmallIntegerField
-#   - SlugField
-#   + SmallIntegerField
-#   - TextField
-#   + TimeField
-#   - URLField
-#   - XMLField
-#   + ForeignKey
-#   + ManyToManyField
-#   + OneToOneField
-
-

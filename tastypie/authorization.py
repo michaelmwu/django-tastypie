@@ -43,10 +43,34 @@ class DjangoAuthorization(Authorization):
     """
     Uses permission checking from ``django.contrib.auth`` to map ``POST``,
     ``PUT``, and ``DELETE`` to their equivalent django auth permissions.
+    
+    Custom permissions can be specified by providing a permission_codes
+    dictionary. This dictionary updates the default dictionary.
+    
+    Permission codes format is a dict with items:
+        'METHOD': '%(app)s.ACTION_%(object)s'
+                  None to delete the default action
     """
+    # GET allowed by default
+    permission_codes = {
+        'POST': '%(app)s.add_%(object)s',
+        'PUT': '%(app)s.change_%(object)s',
+        'DELETE': '%(app)s.delete_%(object)s',
+    }
+    
+    def __init__(self, permission_codes=None):
+        # Update default permission codes
+        if permission_codes:
+            self.permission_codes.update(permission_codes)
+        
+        # Get rid of None or True values
+        for key, value in self.permission_codes.items():
+            if value is None or value is True:
+                del permission_codes[key]
+    
     def is_authorized(self, request, object=None):
-        # GET is always allowed
-        if request.method == 'GET':
+        # cannot map request method to permission code name
+        if request.method not in self.permission_codes:
             return True
 
         klass = self.resource_meta.object_class
@@ -55,19 +79,9 @@ class DjangoAuthorization(Authorization):
         if not klass:
             return True
 
-        permission_codes = {
-            'POST': '%s.add_%s',
-            'PUT': '%s.change_%s',
-            'DELETE': '%s.delete_%s',
-        }
-
-        # cannot map request method to permission code name
-        if request.method not in permission_codes:
-            return True
-
-        permission_code = permission_codes[request.method] % (
-            klass._meta.app_label,
-            klass._meta.module_name)
+        permission_code = self.permission_codes[request.method] % {
+            'app': klass._meta.app_label,
+            'object': klass._meta.module_name}
 
         # user must be logged in to check permissions
         # authentication backend must set request.user

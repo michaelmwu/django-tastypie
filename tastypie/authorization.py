@@ -51,14 +51,14 @@ class DjangoAuthorization(Authorization):
         'METHOD': '%(app)s.ACTION_%(object)s'
                   None to delete the default action
     """
-    # GET allowed by default
-    permission_codes = {
-        'POST': '%(app)s.add_%(object)s',
-        'PUT': '%(app)s.change_%(object)s',
-        'DELETE': '%(app)s.delete_%(object)s',
-    }
-    
     def __init__(self, permission_codes=None):
+        # GET allowed by default
+        self.permission_codes = {
+            'POST': '%(app)s.add_%(object)s',
+            'PUT': '%(app)s.change_%(object)s',
+            'DELETE': '%(app)s.delete_%(object)s',
+        }
+        
         # Update default permission codes
         if permission_codes:
             self.permission_codes.update(permission_codes)
@@ -66,22 +66,22 @@ class DjangoAuthorization(Authorization):
         # Get rid of None or True values
         for key, value in self.permission_codes.items():
             if value is None or value is True:
-                del permission_codes[key]
+                del self.permission_codes[key]
     
     def is_authorized(self, request, object=None):
         # cannot map request method to permission code name
         if request.method not in self.permission_codes:
             return True
-
+        
         klass = self.resource_meta.object_class
 
         # cannot check permissions if we don't know the model
         if not klass:
             return True
-
+            
         permission_code = self.permission_codes[request.method] % {
             'app': klass._meta.app_label,
-            'object': klass._meta.module_name}
+            'object': klass._meta.module_name }
 
         # user must be logged in to check permissions
         # authentication backend must set request.user

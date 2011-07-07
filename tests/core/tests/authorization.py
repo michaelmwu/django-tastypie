@@ -26,6 +26,13 @@ class DjangoNoteResource(ModelResource):
         queryset = Note.objects.filter(is_active=True)
         authorization = DjangoAuthorization()
 
+class CustomDjangoNoteResource(ModelResource):
+    class Meta:
+        resource_name = 'notes'
+        queryset = Note.objects.filter(is_active=True)
+        authorization = DjangoAuthorization(permission_codes=
+                                            { 'GET': '%(app)s.can_view_%(object)s',
+                                              'PUT': None })
 
 class AuthorizationTestCase(TestCase):
     fixtures = ['note_testdata']
@@ -103,6 +110,53 @@ class DjangoAuthorizationTestCase(TestCase):
         request.user.user_permissions.add(self.add)
         request.user.user_permissions.add(self.change)
         request.user.user_permissions.add(self.delete)
-        for method in ('GET', 'POST', 'PUT', 'DELETE'):
+        for method in ('POST', 'PUT', 'DELETE'):
             request.method = method
             self.assertTrue(DjangoNoteResource()._meta.authorization.is_authorized(request))
+
+class CustomDjangoAuthorizationTestCase(TestCase):
+    fixtures = ['note_testdata']
+
+    def setUp(self):
+        self.get = Permission.objects.get_by_natural_key('can_view_note', 'core', 'note')
+        self.add = Permission.objects.get_by_natural_key('add_note', 'core', 'note')
+        self.user = User.objects.all()[0]
+
+    def test_no_perms(self):
+        # sanity check: user has no permissions
+        self.assertFalse(self.user.get_all_permissions())
+
+        request = HttpRequest()
+        request.user = self.user
+
+        for method in ('GET', 'POST'):
+            request.method = method
+            self.assertFalse(CustomDjangoNoteResource()._meta.authorization.is_authorized(request))
+    
+    def test_get_perm(self):
+        request = HttpRequest()
+        request.user = self.user
+
+        # give add permission
+        request.user.user_permissions.add(self.get)
+        request.method = 'GET'
+        self.assertTrue(CustomDjangoNoteResource()._meta.authorization.is_authorized(request))
+
+    def test_add_perm(self):
+        request = HttpRequest()
+        request.user = self.user
+
+        # give add permission
+        request.user.user_permissions.add(self.add)
+        request.method = 'POST'
+        self.assertTrue(CustomDjangoNoteResource()._meta.authorization.is_authorized(request))
+
+    def test_all(self):
+        request = HttpRequest()
+        request.user = self.user
+
+        request.user.user_permissions.add(self.get)
+        request.user.user_permissions.add(self.add)
+        for method in ('GET', 'POST'):
+            request.method = method
+            self.assertTrue(CustomDjangoNoteResource()._meta.authorization.is_authorized(request))

@@ -24,6 +24,11 @@ class Note(models.Model):
     
     def get_absolute_url(self):
         return '/some/fake/path/%s/' % self.pk
+    
+    class Meta:
+        permissions = (
+            ("can_view_note", "Can see notes"),
+        )
 
 
 class Subject(models.Model):
@@ -34,7 +39,6 @@ class Subject(models.Model):
     
     def __unicode__(self):
         return self.name
-
 
 class MediaBit(models.Model):
     note = models.ForeignKey(Note, related_name='media_bits')

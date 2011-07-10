@@ -1349,6 +1349,15 @@ class ModelResourceTestCase(TestCase):
         self.assertEqual(Note.objects.count(), 7)
         new_note = Note.objects.get(slug='cat-is-back')
         self.assertEqual(new_note.content, u'The cat is gone again. I think it was the rabbits that ate him this time.')
+        
+        request.raw_post_data = '{"content": "The cat came back. It was covered in carrot pulp.", "title": "The Cat Is Back"}'
+        
+        resp = resource.put_detail(request, pk=10)
+        self.assertEqual(resp.status_code, 204)
+        self.assertEqual(Note.objects.count(), 7)
+        new_note = Note.objects.get(slug='cat-is-back')
+        self.assertEqual(new_note.content, u'The cat came back. It was covered in carrot pulp.')
+        self.assertTrue(new_note.is_active)
     
     def test_post_list(self):
         self.assertEqual(Note.objects.count(), 6)

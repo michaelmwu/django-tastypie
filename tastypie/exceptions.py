@@ -1,10 +1,9 @@
 from django.http import HttpResponse
-
+from response import Response
 
 class TastypieError(Exception):
     """A base exception for other tastypie-related errors."""
     pass
-
 
 class HydrationError(TastypieError):
     """Raised when there is an error hydrating data."""
@@ -84,3 +83,12 @@ class ImmediateHttpResponse(TastypieError):
     
     def __init__(self, response):
         self.response = response
+
+class ErrorResponse(TastypieError, Response):
+    """
+    An exception representing an Response that should be returned immediately
+    with serialized content
+    """
+
+    def __init__(self, status, content=None, headers={}):
+        self.response = Response(status, content=content, headers=headers)

@@ -144,6 +144,47 @@ class DeclarativeMetaclass(type):
         
         return new_class
 
+def tastypie_view(view):
+    """
+    Wraps methods so they can be called in a more functional way as well
+    as handling exceptions better.
+    
+    Note that if ``BadRequest`` or an exception with a ``response`` attr
+    are seen, there is special handling to either present a message back
+    to the user or return the response traveling with the exception.
+    """
+    @csrf_exempt
+    def wrapper(request, *args, **kwargs):
+        try:
+            response = view(request, *args, **kwargs)
+            
+            if request.is_ajax():
+                # IE excessively caches XMLHttpRequests, so we're disabling
+                # the browser cache here.
+                # See http://www.enhanceie.com/ie/bugs.asp for details.
+                patch_cache_control(response, no_cache=True)
+            
+            return response
+        except (BadRequest, ApiFieldError), e:
+            return HttpBadRequest(e.args[0])
+        except ValidationError, e:
+            return HttpBadRequest(', '.join(e.messages))
+        except Exception, e:
+            if hasattr(e, 'response'):
+                return e.response
+            
+            # A real, non-expected exception.
+            # Handle the case where the full traceback is more helpful
+            # than the serialized error.
+            if settings.DEBUG and getattr(settings, 'TASTYPIE_FULL_DEBUG', False):
+                raise
+            
+            # Rather than re-raising, we're going to things similar to
+            # what Django does. The difference is returning a serialized
+            # error message.
+            return self._handle_500(request, e)
+    
+    return wrapper
 
 class Resource(object):
     """
@@ -442,10 +483,10 @@ class Resource(object):
         method = getattr(self, "%s_%s" % (request_method, request_type), None)
         
         if method is None:
-            raise ImmediateHttpResponse(response=HttpNotImplemented())
+            raise ErrorResponse(status=httplib.NOT_IMPLEMENTED)
         
         self.is_authenticated(request)
-        self.is_authorized(request)
+        #self.is_authorized(request)
         self.throttle_check(request)
         
         # All clear. Process the request.

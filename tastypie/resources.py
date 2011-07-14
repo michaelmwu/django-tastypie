@@ -1,5 +1,6 @@
 import logging
 import warnings
+import httplib
 import django
 from django.conf import settings
 from django.conf.urls.defaults import patterns, url
@@ -168,6 +169,38 @@ class Resource(object):
             return self.fields[name]
         raise AttributeError(name)
     
+    def render(self, request, response):
+        desired_format = self.determine_format(request)
+        response.media_type = build_content_type(desired_format)
+        
+        if response.has_content_body:
+            try:
+                content = self.serialize(request, response.content, desired_format)
+            except ErrorResponse, e:
+                # Serialize with the default format, i.e, something that can't fail. Maybe this should be plain not JSON?
+                content = self.serialize(request, response.content)
+        else:
+            content = ""
+        
+        resp = HttpResponse(content=content, content_type=response.media_type, status=response.status)
+        
+        # Set the headers
+        for (key, val) in response.headers.items():
+            resp[key] = val
+
+        return resp
+    
+    def format_error(self, e):
+        """
+        Takes a set of error messages in the format: messages,
+        detailed messages, status and returns a pre-serialized response
+        """
+        return Response(e.messages, status=e.status)
+    
+    def handle_error(self, request, e):
+        if isinstance(exception, (NotFound, ObjectDoesNotExist)):
+            return Response(message="Not found", status=httplib.NOT_FOUND)
+    
     def wrap_view(self, view):
         """
         Wraps methods so they can be called in a more functional way as well
@@ -183,32 +216,29 @@ class Resource(object):
                 callback = getattr(self, view)
                 response = callback(request, *args, **kwargs)
                 
-                
                 if request.is_ajax():
                     # IE excessively caches XMLHttpRequests, so we're disabling
                     # the browser cache here.
                     # See http://www.enhanceie.com/ie/bugs.asp for details.
                     patch_cache_control(response, no_cache=True)
-                
-                return response
-            except (BadRequest, ApiFieldError), e:
-                return HttpBadRequest(e.args[0])
-            except ValidationError, e:
-                return HttpBadRequest(', '.join(e.messages))
             except Exception, e:
-                if hasattr(e, 'response'):
-                    return e.response
+                # Call the class error handler, otherwise bail
+                response = self.handle_error(request, e)
                 
-                # A real, non-expected exception.
-                # Handle the case where the full traceback is more helpful
-                # than the serialized error.
-                if settings.DEBUG and getattr(settings, 'TASTYPIE_FULL_DEBUG', False):
-                    raise
-                
-                # Rather than re-raising, we're going to things similar to
-                # what Django does. The difference is returning a serialized
-                # error message.
-                return self._handle_500(request, e)
+                if response is None:
+                    # A real, non-expected exception.
+                    # If we are in full debug mode, reraise to get a full traceback
+                    # instead of a serialized error response.
+                    if settings.DEBUG and getattr(settings, 'TASTYPIE_FULL_DEBUG', False):
+                        raise
+                    else:
+                        # Otherwise return a serialized error response
+                        response = self._handle_500(request, e)
+            
+            if isinstance(response, ErrorResponse):
+                response = self.format_error(response)
+            
+            return self.render(request, response)
         
         return wrapper
     
@@ -216,19 +246,14 @@ class Resource(object):
         import traceback
         import sys
         the_trace = '\n'.join(traceback.format_exception(*(sys.exc_info())))
-        response_class = HttpApplicationError
-        
-        if isinstance(exception, (NotFound, ObjectDoesNotExist)):
-            response_class = HttpResponseNotFound
         
         if settings.DEBUG:
             data = {
                 "error_message": unicode(exception),
                 "traceback": the_trace,
             }
-            desired_format = self.determine_format(request)
-            serialized = self.serialize(request, data, desired_format)
-            return response_class(content=serialized, content_type=build_content_type(desired_format))
+            
+            return Response(data, status=httplib.INTERNAL_SERVER_ERROR)
         
         # When DEBUG is False, send an error message to the admins (unless it's
         # a 404, in which case we check the setting).
@@ -251,9 +276,8 @@ class Resource(object):
         data = {
             "error_message": getattr(settings, 'TASTYPIE_CANNED_ERROR', "Sorry, this request could not be processed. Please try again later."),
         }
-        desired_format = self.determine_format(request)
-        serialized = self.serialize(request, data, desired_format)
-        return response_class(content=serialized, content_type=build_content_type(desired_format))
+        
+        return Response(data, status=httplib.INTERNAL_SERVER_ERROR)
     
     def _build_reverse_url(self, name, args=None, kwargs=None):
         """

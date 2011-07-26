@@ -236,6 +236,20 @@ class Resource(object):
         Takes a set of error messages in the format: messages,
         detailed messages, status and returns a pre-serialized response
         """
+        error_content = {
+            'code': e.status,
+            'message': e.message
+        }
+        
+        if e.messages:
+            error_content['messages'] = e.errors
+        
+        if e.errors:
+            error_content['errors'] = e.errors
+        
+        if settings.DEBUG and e.traceback:
+            trace = '\n'.join(traceback.format_exception(*e.traceback))
+        
         return Response(e.messages, status=e.status)
     
     def handle_error(self, request, e):
@@ -262,6 +276,9 @@ class Resource(object):
                     # the browser cache here.
                     # See http://www.enhanceie.com/ie/bugs.asp for details.
                     patch_cache_control(response, no_cache=True)
+            except ErrorResponse, e:
+                # If an error response was raised, use it
+                response = e
             except Exception, e:
                 # Call the class error handler, otherwise bail
                 response = self.handle_error(request, e)
@@ -277,24 +294,16 @@ class Resource(object):
                         response = self._handle_500(request, e)
             
             if isinstance(response, ErrorResponse):
+                # Format the errors
                 response = self.format_error(response)
             
             return self.render(request, response)
         
         return wrapper
     
-    def _handle_500(self, request, exception):
-        import traceback
-        import sys
-        the_trace = '\n'.join(traceback.format_exception(*(sys.exc_info())))
-        
+    def _handle_500(self, request, exception):        
         if settings.DEBUG:
-            data = {
-                "error_message": unicode(exception),
-                "traceback": the_trace,
-            }
-            
-            return Response(data, status=httplib.INTERNAL_SERVER_ERROR)
+            return ErrorResponse(message=unicode(exception), status=httplib.INTERNAL_SERVER_ERROR, traceback=True)
         
         # When DEBUG is False, send an error message to the admins (unless it's
         # a 404, in which case we check the setting).
@@ -313,12 +322,10 @@ class Resource(object):
                 message = "%s\n\n%s" % (the_trace, request_repr)
                 mail_admins(subject, message, fail_silently=True)
         
-        # Prep the data going out.
-        data = {
-            "error_message": getattr(settings, 'TASTYPIE_CANNED_ERROR', "Sorry, this request could not be processed. Please try again later."),
-        }
+        # Return some canned error
+        error_message = getattr(settings, 'TASTYPIE_CANNED_ERROR', "Sorry, this request could not be processed. Please try again later."),
         
-        return Response(data, status=httplib.INTERNAL_SERVER_ERROR)
+        return ErrorResponse(data, message=error_message, status=httplib.INTERNAL_SERVER_ERROR)
     
     def _build_reverse_url(self, name, args=None, kwargs=None):
         """

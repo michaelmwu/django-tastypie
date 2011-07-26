@@ -6,6 +6,7 @@ als depending on the accept header of the request.
 """
 
 import datetime
+import httplib
 
 from django.conf import settings
 from django.core.handlers.wsgi import STATUS_CODE_TEXT
@@ -14,14 +15,10 @@ from django.utils.encoding import smart_str
 
 __all__ = ('Response', 'ErrorResponse')
 
-# TODO: remove raw_content/cleaned_content and just use content?
-
-class Response(object):
-    """
-    An HttpResponse that may include content that hasn't yet been serialized.
-    """
-
-    def __init__(self, content=None, status=200, headers=None):
+class HttpHeaders(object):
+    status_code = httplib.OK
+    
+    def __init__(self, status=None, headers=None):
         # _headers is a mapping of the lower-case name to the original case of
         # the header (required for working with legacy systems) and the header
         # value.  Both the name of the header and its value are ASCII strings.
@@ -32,9 +29,6 @@ class Response(object):
             self.status_code = status
     
         #self.media_type = None
-        self.has_content_body = content is not None
-        self.raw_content = content      # content prior to filtering
-        self.cleaned_content = content  # content after filtering
  
     @property
     def status_text(self):
@@ -45,10 +39,9 @@ class Response(object):
         return STATUS_CODE_TEXT.get(self.status, '')
 
     def __str__(self):
-        """Full HTTP message, including headers."""
+        """HTTP headers only."""
         return '\n'.join(['%s: %s' % (key, value)
-            for key, value in self._headers.values()]) \
-            + '\n\n' + unicode(self.content)
+            for key, value in self._headers.values()]) + '\n'
 
     def _convert_to_ascii(self, *values):
         """Converts all values to ascii strings."""
@@ -131,23 +124,47 @@ class Response(object):
         self.set_cookie(key, max_age=0, path=path, domain=domain,
                         expires='Thu, 01-Jan-1970 00:00:00 GMT')
 
-    def _get_content(self):
-        if self.has_header('Content-Encoding'):
-            return ''.join(self._container)
-        return smart_str(''.join(self._container), self._charset)
+# TODO: remove raw_content/cleaned_content and just use content?
+class Response(HttpHeaders):
+    """
+    An HttpResponse that may include content that hasn't yet been serialized.
+    """
 
-    def _set_content(self, value):
-        self._container = [value]
-        self._is_string = True
+    def __init__(self, content=None, status=None, headers=None):
+        super(Response, self).__init__(status=status, headers=headers)
+        #self.media_type = None
+        self.has_content_body = content is not None
+        self.raw_content = content
+
+    def __str__(self):
+        """Full HTTP message, including headers."""
+        return '\n'.join(['%s: %s' % (key, value)
+            for key, value in self._headers.values()]) \
+            + '\n\n' + unicode(self.content)
+
+    def _get_content(self):
+        return self.raw_content
+
+    def _set_content(self, content):
+        self.has_content_body = content is not None
+        self.raw_content = content
 
     content = property(_get_content, _set_content)
 
-    def __iter__(self):
-        self._iterator = iter(self._container)
-        return self
+class ErrorResponse(HttpHeaders):
+    """
+    Errors along with a status code, headers, and cookies
+    """
 
-    def next(self):
-        chunk = self._iterator.next()
-        if isinstance(chunk, unicode):
-            chunk = chunk.encode(self._charset)
-        return str(chunk)
+    def __init__(self, message="", messages=None, errors=None, status=httplib.BAD_REQUEST, headers=None, traceback=False):
+        import sys
+        
+        if traceback:
+            (type, value, tb) = sys.exc_info()
+            
+            if type:
+                self.traceback = (type, value, tb) 
+        
+        self.message = message
+        self.messages = messages
+        self.errors = errors

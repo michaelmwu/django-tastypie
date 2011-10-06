@@ -1,3 +1,5 @@
+from django.db.models import Q
+
 class Authorization(object):
     """
     A base class that provides no permissions checking.
@@ -29,6 +31,9 @@ class ReadOnlyAuthorization(Authorization):
     Only allows GET requests.
     """
 
+    def get_limits(self, request, _and, _or):
+        return self.is_authorized(request) is True 
+
     def is_authorized(self, request, object=None):
         """
         Allow any ``GET`` request.
@@ -36,7 +41,7 @@ class ReadOnlyAuthorization(Authorization):
         if request.method == 'GET':
             return True
         else:
-            return False
+            return None
 
 
 class DjangoAuthorization(Authorization):
@@ -68,16 +73,19 @@ class DjangoAuthorization(Authorization):
             if value is None or value is True:
                 del permission_codes[key]
     
+    def get_limits(self, request, _and, _or):
+        return is_authorized(self, request) is True
+    
     def is_authorized(self, request, object=None):
-        # cannot map request method to permission code name
+        # cannot map request method to permission code name, so pass through
         if request.method not in self.permission_codes:
-            return True
+            return None
 
         klass = self.resource_meta.object_class
 
         # cannot check permissions if we don't know the model
         if not klass:
-            return True
+            return None
 
         permission_code = self.permission_codes[request.method] % {
             'app': klass._meta.app_label,
@@ -89,3 +97,61 @@ class DjangoAuthorization(Authorization):
             return False
 
         return request.user.has_perm(permission_code)
+
+class OwnerDjangoAuthorization(DjangoAuthorization):
+    def get_limits(self, request, _and, _or):
+        # Pass through GET
+        if request.method == 'GET':
+            return None
+
+        klass = self.resource_meta.object_class
+
+        # cannot check permissions if we don't know the model
+        if not klass:
+            return None
+        
+        meta = klass.meta
+        owner_field = getattr(meta, 'owner_field', 'user')
+        
+        # user must be logged in to check permissions
+        # authentication backend must set request.user
+        if not hasattr(request, 'user'):
+            return None
+        
+        kwargs = { owner_field: request.user }
+        
+        return None, Q(*kwargs)
+        
+    """
+    Uses permission checking from ``django.contrib.auth`` to map ``POST``,
+    ``PUT``, and ``DELETE`` to their equivalent django auth permissions.
+    """
+    def is_authorized(self, request, object=None):
+        # Pass through if no object is received
+        if not object:
+            return None
+        
+        # Pass through GET
+        if request.method == 'GET':
+            return None
+
+        klass = self.resource_meta.object_class
+
+        # cannot check permissions if we don't know the model
+        if not klass:
+            return None
+        
+        meta = klass.meta
+        owner_field = getattr(meta, 'owner_field', 'user')
+
+        owner = getattr(object, owner_field, None)
+
+        if not owner:
+            return None
+
+        # user must be logged in to check permissions
+        # authentication backend must set request.user
+        if not hasattr(request, 'user'):
+            return None
+
+        return request.user.id == owner.id

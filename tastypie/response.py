@@ -151,12 +151,14 @@ class Response(HttpHeaders):
 
     content = property(_get_content, _set_content)
 
-class ErrorResponse(HttpHeaders):
+class ErrorResponse(Response):
     """
     Errors along with a status code, headers, and cookies
     """
 
     def __init__(self, message="", messages=None, errors=None, status=httplib.BAD_REQUEST, headers=None, traceback=False):
+        super(ErrorResponse, self).__init__(status=status, headers=headers)
+        
         import sys
         
         if traceback:

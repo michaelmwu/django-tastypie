@@ -86,7 +86,7 @@ class ApiField(object):
         
         return self._default
     
-    def dehydrate(self, bundle):
+    def dehydrate(self, bundle, request):
         """
         Takes data from the provided object and prepares it for the
         resource.
@@ -197,6 +197,23 @@ class FileField(ApiField):
         except ValueError:
             return None
 
+class AttachmentFileField(FileField):
+    """
+    A file-related field that handles file uploads in multipart requests.
+    Uploaded files can be referenced using the following structure:
+    
+        {
+            'attachment': 'field_name' 
+        }
+    """
+        
+    def hydrate(self, obj, request=None):
+        value = super(FileField, self).hydrate(obj)
+        field = value.get('attachment', None)
+        if field and request:
+            return request.FILES.get(field, None)
+        else:
+            return None
 
 class IntegerField(ApiField):
     """
@@ -450,7 +467,7 @@ class RelatedField(ApiField):
     
     def get_related_resource(self, related_instance):
         """
-        Instaniates the related resource.
+        Instantiates the related resource.
         """
         related_resource = self.to_class()
         
@@ -568,7 +585,7 @@ class ToOneField(RelatedField):
         super(ToOneField, self).__init__(to, attribute, related_name=related_name, default=default, null=null, blank=blank, readonly=readonly, full=full, unique=unique, help_text=help_text)
         self.fk_resource = None
     
-    def dehydrate(self, bundle):
+    def dehydrate(self, bundle, request):
         try:
             foreign_obj = getattr(bundle.obj, self.attribute)
         except ObjectDoesNotExist:
@@ -698,7 +715,7 @@ class TimeField(ApiField):
     dehydrated_type = 'time'
     help_text = 'A time as string. Ex: "20:05:23"'
 
-    def dehydrate(self, obj):
+    def dehydrate(self, obj, request):
         return self.convert(super(TimeField, self).dehydrate(obj))
 
     def convert(self, value):

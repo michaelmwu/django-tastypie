@@ -1,5 +1,27 @@
+"""
+Handling of media types, as found in HTTP Content-Type and Accept headers.
+
+See http://www.w3.org/Protocols/rfc2616/rfc2616-sec3.html#sec3.7
+"""
+
 import mimeparse
 
+def media_type_matches(lhs, rhs):
+    """
+    Returns ``True`` if the media type in the first argument <= the
+    media type in the second argument.  The media types are strings
+    as described by the HTTP spec.
+
+    Valid media type strings include:
+
+    'application/json; indent=4'
+    'application/json'
+    'text/*'
+    '*/*'
+    """
+    
+    # Result of best match is a matching mimetype, or '' if no match is found
+    return len(mimeparse.best_match([rhs], lhs)) > 0
 
 def determine_format(request, serializer, default_format='application/json'):
     """

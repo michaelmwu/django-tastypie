@@ -13,13 +13,32 @@ We need a method to be able to:
 
 import httplib
 
+from StringIO import StringIO
+from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from django.http import QueryDict
 from django.http.multipartparser import MultiPartParser as DjangoMultiPartParser
 from django.http.multipartparser import MultiPartParserError
 from django.utils import simplejson as json
-from djangorestframework.compat import yaml
-from djangorestframework.response import ErrorResponse
-from djangorestframework.utils.mediatypes import media_type_matches
+
+try:
+    import lxml
+    from lxml.etree import parse as parse_xml
+    from lxml.etree import Element, tostring
+except ImportError:
+    lxml = None
+try:
+    import yaml
+    from django.core.serializers import pyyaml
+except ImportError:
+    yaml = None
+try:
+    import biplist
+except ImportError:
+    biplist = None
+
+from tastypie.response import ErrorResponse
+from tastypie.utils.mime import media_type_matches
 
 
 __all__ = (
@@ -27,7 +46,6 @@ __all__ = (
     'JSONParser',
     'PlainTextParser',
     'FormParser',
-    'MultiPartParser',
     'YAMLParser',
 )
 
@@ -40,7 +58,6 @@ class BaseParser(object):
 
     media_type = None
 
-    
     def can_handle_request(self, content_type):
         """
         Returns :const:`True` if this parser is able to deal with the given *content_type*.
@@ -54,10 +71,10 @@ class BaseParser(object):
         """
         return media_type_matches(self.media_type, content_type)
 
-    def parse(self, request, stream):
+    def parse(self, content, content_type=None, request=None):
         """
-        Given a *stream* to read from, return the deserialized output.
-        Should return a 2-tuple of (data, files).
+        Given a *stream* or *string*, return the deserialized output.
+        Should return the deserialized data.
         """
         raise NotImplementedError("BaseParser.parse() Must be overridden to be implemented.")
 
@@ -69,19 +86,20 @@ class JSONParser(BaseParser):
 
     media_type = 'application/json'
 
-    def parse(self, request, stream):
+    def parse(self, content, content_type=None, request=None):
         """
-        Returns a 2-tuple of `(data, files)`.
-
+        Returns deserialized json content.
+        
         `data` will be an object which is the parsed content of the response.
-        `files` will always be `None`.
         """
         try:
-            return (json.load(stream), None)
+            if getattr(content, 'read', None):
+                return json.load(content)
+            else:
+                return json.loads(content)
         except ValueError, exc:
             raise ErrorResponse(httplib.BAD_REQUEST,
                                 {'detail': 'JSON parse error - %s' % unicode(exc)})
-
 
 if yaml:
     class YAMLParser(BaseParser):
@@ -91,15 +109,14 @@ if yaml:
     
         media_type = 'application/yaml'
     
-        def parse(self, request, stream):
+        def parse(self, content, content_type=None, request=None):
             """
-            Returns a 2-tuple of `(data, files)`.
+            Returns deserialized YAML content
     
             `data` will be an object which is the parsed content of the response.
-            `files` will always be `None`.
             """
             try:
-                return (yaml.safe_load(stream), None)
+                return yaml.safe_load(content)
             except ValueError, exc:
                 raise ErrorResponse(httplib.BAD_REQUEST,
                                     {'detail': 'YAML parse error - %s' % unicode(exc)})
@@ -113,14 +130,16 @@ class PlainTextParser(BaseParser):
 
     media_type = 'text/plain'
 
-    def parse(self, request, stream):
+    def parse(self, content, content_type=None, request=None):
         """
-        Returns a 2-tuple of `(data, files)`.
+        Returns the plain text content.
         
         `data` will simply be a string representing the body of the request.
-        `files` will always be `None`.
         """
-        return (stream.read(), None)
+        if getattr(content, 'read', None):
+            content = content.read()
+        
+        return content
 
 
 class FormParser(BaseParser):
@@ -129,75 +148,92 @@ class FormParser(BaseParser):
     """
 
     media_type = 'application/x-www-form-urlencoded'
+    multipart_media_type = 'multipart/form-data'
 
-    def parse(self, request, stream):
+    def can_handle_request(self, content_type):
+        return media_type_matches(self.media_type, content_type) or media_type_matches(self.multipart_media_type, content_type)
+
+    def parse(self, content, content_type=None, request=None):
         """
-        Returns a 2-tuple of `(data, files)`.
+        Returns form, parsed into an object with keys
         
         `data` will be a :class:`QueryDict` containing all the form parameters.
-        `files` will always be :const:`None`.
         """
-        data = QueryDict(stream.read())
-        return (data, None)
+        if self.can_handle_request(request.META.get('CONTENT_TYPE', '')):
+            return request.POST
+        else:
+            return QueryDict(content, request._encoding)
 
-
-class MultiPartParser(BaseParser):
-    """
-    Parser for multipart form data, which may include file data.
-    """
-
-    media_type = 'multipart/form-data'
-
-    def parse(self, request, stream):
+if lxml:
+    class XMLParser(BaseParser):
         """
-        Returns a 2-tuple of `(data, files)`.
+        Not the smartest deserializer on the planet. At the request level,
+        it first tries to output the deserialized subelement called "object"
+        or "objects" and falls back to deserializing based on hinted types in
+        the XML element attribute "type".
+        """
         
-        `data` will be a :class:`QueryDict` containing all the form parameters.
-        `files` will be a :class:`QueryDict` containing all the form files.
-        """
-        upload_handlers = request._get_upload_handlers()
-        try:
-            django_parser = DjangoMultiPartParser(request.META, stream, upload_handlers)
-        except MultiPartParserError, exc:
-            raise ErrorResponse(httplib.BAD_REQUEST,
-                                {'detail': 'multipart parse error - %s' % unicode(exc)})
-        return django_parser.parse()
+        media_type = 'application/xml'
+        
+        def parse(self, content, content_type=None, request=None):
+            if isinstance(content, basestring):
+                content = StringIO(content)
+            
+            data = parse_xml(content).getroot()
+            
+            if data.tag == 'request':
+                # if "object" or "objects" exists, return deserialized forms.
+                elements = data.getchildren()
+                for element in elements:
+                    if element.tag in ('object', 'objects'):
+                        return self.from_etree(element)
+                return dict((element.tag, self.from_etree(element)) for element in elements)
+            elif data.tag == 'object' or data.get('type') == 'hash':
+                return dict((element.tag, self.from_etree(element)) for element in data.getchildren())
+            elif data.tag == 'objects' or data.get('type') == 'list':
+                return [self.from_etree(element) for element in data.getchildren()]
+            else:
+                type_string = data.get('type')
+                if type_string in ('string', None):
+                    return data.text
+                elif type_string == 'integer':
+                    return int(data.text)
+                elif type_string == 'float':
+                    return float(data.text)
+                elif type_string == 'boolean':
+                    if data.text == 'True':
+                        return True
+                    else:
+                        return False
+                else:
+                    return None
+else:
+    XMLParser = None
 
-DEFAULT_PARSERS = ( JSONParser,
-                    FormParser,
-                    MultiPartParser )
+if biplist:
+    class PListParser(BaseParser):
+        """
+        Given some binary plist data, returns a Python dictionary of the decoded data.
+        """
+        
+        media_type = 'application/x-plist'
+        
+        def parse(self, content, content_type=None, request=None):            
+            return biplist.readPlistFromString(content)
+else:
+    PListParser = None
+
+
+DEFAULT_PARSERS = ( JSONParser, )
 
 if YAMLParser:
     DEFAULT_PARSERS += ( YAMLParser, )
 
-class DefaultParser(BaseParser):
-    """
-    Uses the default parsers as specified by DEFAULT_PARSERS to parse a request
-    """
-    PARSERS = []
-    _parsers = {}
+if XMLParser:
+    DEFAULT_PARSERS += ( YAMLParser, )
 
-    def __init__(self, view):
-        """
-        Initialize the parser with the ``View`` instance as state,
-        in case the parser needs to access any metadata on the :obj:`View` object.
-        """
-        self.view = view
+if PListParser:
+    DEFAULT_PARSERS += ( PListParser, )
     
-    def can_handle_request(self, content_type):
-        """
-        Calls 
-        """
-        for parser in DEFAULT_PARSERS + PARSERS:
-            if parser().can_handle_request(content_type):
-                _parsers[content_type] = parser
-                return True
-        
-        return False
+DEFAULT_PARSERS += ( FormParser, )
 
-    def parse(self, request, stream):
-        """
-        Given a *stream* to read from, return the deserialized output.
-        Should return a 2-tuple of (data, files).
-        """
-        return _parsers[]

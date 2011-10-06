@@ -52,6 +52,7 @@ class FormValidation(Validation):
         form = self.form_class(data)
         
         if form.is_valid():
+            self.cleaned_data = form.cleaned_data
             return {}
         
         # The data is invalid. Let's collect all the error messages & return

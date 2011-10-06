@@ -144,27 +144,6 @@ class Serializer(object):
         serialized = getattr(self, "to_%s" % desired_format)(bundle, options)
         return serialized
     
-    def deserialize(self, content, format='application/json'):
-        """
-        Given some data and a format, calls the correct method to deserialize
-        the data and returns the result.
-        """
-        desired_format = None
-
-        format = format.split(';')[0]
-
-        for short_format, long_format in self.content_types.items():
-            if format == long_format:
-                if hasattr(self, "from_%s" % short_format):
-                    desired_format = short_format
-                    break
-        
-        if desired_format is None:
-            raise UnsupportedFormat("The format indicated '%s' had no available deserialization method. Please check your ``formats`` and ``content_types`` on your Serializer." % format)
-        
-        deserialized = getattr(self, "from_%s" % desired_format)(content)
-        return deserialized
-
     def to_simple(self, data, options):
         """
         For a piece of data, attempts to recognize it and provide a simplified
@@ -259,40 +238,6 @@ class Serializer(object):
             if data_type != 'null':
                 element.text = force_unicode(simple_data)
         return element
-
-    def from_etree(self, data):
-        """
-        Not the smartest deserializer on the planet. At the request level,
-        it first tries to output the deserialized subelement called "object"
-        or "objects" and falls back to deserializing based on hinted types in
-        the XML element attribute "type".
-        """
-        if data.tag == 'request':
-            # if "object" or "objects" exists, return deserialized forms.
-            elements = data.getchildren()
-            for element in elements:
-                if element.tag in ('object', 'objects'):
-                    return self.from_etree(element)
-            return dict((element.tag, self.from_etree(element)) for element in elements)
-        elif data.tag == 'object' or data.get('type') == 'hash':
-            return dict((element.tag, self.from_etree(element)) for element in data.getchildren())
-        elif data.tag == 'objects' or data.get('type') == 'list':
-            return [self.from_etree(element) for element in data.getchildren()]
-        else:
-            type_string = data.get('type')
-            if type_string in ('string', None):
-                return data.text
-            elif type_string == 'integer':
-                return int(data.text)
-            elif type_string == 'float':
-                return float(data.text)
-            elif type_string == 'boolean':
-                if data.text == 'True':
-                    return True
-                else:
-                    return False
-            else:
-                return None
             
     def to_json(self, data, options=None):
         """
@@ -301,12 +246,6 @@ class Serializer(object):
         options = options or {}
         data = self.to_simple(data, options)
         return simplejson.dumps(data, cls=json.DjangoJSONEncoder, sort_keys=True)
-
-    def from_json(self, content):
-        """
-        Given some JSON data, returns a Python dictionary of the decoded data.
-        """
-        return simplejson.loads(content)
 
     def to_jsonp(self, data, options=None):
         """
@@ -327,15 +266,6 @@ class Serializer(object):
         
         return tostring(self.to_etree(data, options), xml_declaration=True, encoding='utf-8')
     
-    def from_xml(self, content):
-        """
-        Given some XML data, returns a Python dictionary of the decoded data.
-        """
-        if lxml is None:
-            raise ImproperlyConfigured("Usage of the XML aspects requires lxml.")
-        
-        return self.from_etree(parse_xml(StringIO(content)).getroot())
-    
     def to_yaml(self, data, options=None):
         """
         Given some Python data, produces YAML output.
@@ -346,15 +276,6 @@ class Serializer(object):
             raise ImproperlyConfigured("Usage of the YAML aspects requires yaml.")
         
         return yaml.dump(self.to_simple(data, options))
-    
-    def from_yaml(self, content):
-        """
-        Given some YAML data, returns a Python dictionary of the decoded data.
-        """
-        if yaml is None:
-            raise ImproperlyConfigured("Usage of the YAML aspects requires yaml.")
-        
-        return yaml.load(content)
     
     def to_plist(self, data, options=None):
         """
@@ -367,15 +288,6 @@ class Serializer(object):
         
         return biplist.writePlistToString(self.to_simple(data, options))
     
-    def from_plist(self, content):
-        """
-        Given some binary plist data, returns a Python dictionary of the decoded data.
-        """
-        if biplist is None:
-            raise ImproperlyConfigured("Usage of the plist aspects requires biplist.")
-        
-        return biplist.readPlistFromString(content)
-    
     def to_html(self, data, options=None):
         """
         Reserved for future usage.
@@ -386,16 +298,6 @@ class Serializer(object):
         """
         options = options or {}
         return 'Sorry, not implemented yet. Please append "?format=json" to your URL.'
-    
-    def from_html(self, content):
-        """
-        Reserved for future usage.
-        
-        The desire is to handle form-based (maybe Javascript?) input, making an
-        API available to a browser. This is on the TODO list but not currently
-        implemented.
-        """
-        pass
 
 def get_type_string(data):
     """

@@ -91,4 +91,4 @@ class ErrorResponse(TastypieError, Response):
     """
 
     def __init__(self, status, content=None, headers={}):
-        self.response = Response(status, content=content, headers=headers)
+        self.response = Response(content=content, status=status, headers=headers)

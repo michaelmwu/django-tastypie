@@ -19,6 +19,7 @@ class HttpHeaders(object):
     status_code = httplib.OK
     
     def __init__(self, status=None, headers=None):
+        print "HEADERS INIT"
         # _headers is a mapping of the lower-case name to the original case of
         # the header (required for working with legacy systems) and the header
         # value.  Both the name of the header and its value are ASCII strings.
@@ -131,6 +132,7 @@ class Response(HttpHeaders):
     """
 
     def __init__(self, content=None, status=None, headers=None):
+        print "RESPONSE INIT"
         super(Response, self).__init__(status=status, headers=headers)
         #self.media_type = None
         self.has_content_body = content is not None
@@ -157,7 +159,8 @@ class ErrorResponse(Response):
     """
 
     def __init__(self, message="", messages=None, errors=None, status=httplib.BAD_REQUEST, headers=None, traceback=False):
-        super(ErrorResponse, self).__init__(status=status, headers=headers)
+        print "ERRORRESPONSE INIT"
+        super(ErrorResponse, self).__init__(content=None, status=status, headers=headers)
         
         import sys
         

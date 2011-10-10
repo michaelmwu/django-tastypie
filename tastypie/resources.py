@@ -393,10 +393,11 @@ class Resource(object):
         # Due to the way Django parses URLs, ``get_multiple`` won't work without
         # a trailing slash.
         
-        urls = [
-            self.list_url(),
-            self.url(r"/schema", self.wrap_view('get_schema'), name="api_get_schema"),
-        ]
+        urls = []
+        
+        urls.extend(as_tuple(self.list_url()))
+        
+        urls.append(self.url(r"/schema", self.wrap_view('get_schema'), name="api_get_schema"))
  
         if self._meta.detail_url:
             urls.extend(self.nest(r"/(?P<pk>\w[\w-]*)", self.wrap_view('dispatch_detail'), name="api_dispatch_detail"))

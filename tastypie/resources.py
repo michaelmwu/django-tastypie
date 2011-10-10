@@ -626,7 +626,8 @@ class Resource(object):
         # Upgrade request to a TastypieHTTPRequest
         self.wrap_request(request)
         
-        del kwargs['tastypie_nesting']
+        if 'tastypie_nesting' in kwargs:
+            del kwargs['tastypie_nesting']
         
         allowed_methods = getattr(self._meta, "%s_allowed_methods" % request_type, None)
         request_method = self.method_check(request, allowed=allowed_methods)

@@ -159,9 +159,14 @@ class FormParser(BaseParser):
         
         `data` will be a :class:`QueryDict` containing all the form parameters.
         """
+        print "form parsing"
+        
         if self.can_handle_request(request.META.get('CONTENT_TYPE', '')):
+            print "can handle"
+            print request.POST
             return request.POST
         else:
+            print "nope"
             return QueryDict(content, request._encoding)
 
 if lxml:

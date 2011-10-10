@@ -4,6 +4,8 @@ Monkey patches standard Django HTTP Requests to handle multipart uploads
 @author: Michael Wu
 """
 
+from pprint import pformat
+
 from django.http import HttpRequest, QueryDict, MultiValueDict
 from tastypie.multipart import MultiPartMixedParser
 from tastypie.utils.mime import media_type_matches
@@ -17,7 +19,7 @@ class TastypieHTTPRequest(HttpRequest):
         """
         Init when monkey patching classes
         """
-        self._data = None
+        pass
 
     @property
     def content_type(self):
@@ -37,7 +39,7 @@ class TastypieHTTPRequest(HttpRequest):
         """
         Parses the request body and returns the form data.
         """
-        if not hasattr(self, '_post'):
+        if not hasattr(self, '_form'):
             self._load_data_and_files()
         return self._form
     
@@ -46,7 +48,7 @@ class TastypieHTTPRequest(HttpRequest):
         """
         Parses the request body and returns the form data.
         """
-        if not hasattr(self, '_post'):
+        if not hasattr(self, '_form'):
             self._load_data_and_files()
         return self._form
 
@@ -141,7 +143,33 @@ class TastypieHTTPRequest(HttpRequest):
                 # empty POST
                 self._mark_post_parse_error()
                 raise
-        elif media_type_matches(self.META.get('CONTENT_TYPE', ''), 'application/x-form-urlencoded'):
-            self._data, self._files = None, QueryDict(self.raw_post_data, self._encoding), MultiValueDict()
+        elif media_type_matches(self.META.get('CONTENT_TYPE', ''), 'application/x-www-form-urlencoded'):
+            self._data, self._form, self._files = self, QueryDict(self.raw_post_data, self._encoding), MultiValueDict()
+            print self._form
         else:
             self._data, self._form, self._files = self, QueryDict(''), MultiValueDict()
+    
+    def __repr__(self):
+        # Since this is called as part of error handling, we need to be very
+        # robust against potentially malformed input.
+        try:
+            get = pformat(self.GET)
+        except:
+            get = '<could not parse>'
+        if self._post_parse_error:
+            post = '<could not parse>'
+        else:
+            try:
+                post = pformat(self.POST)
+            except:
+                post = '<could not parse>'
+        try:
+            cookies = pformat(self.COOKIES)
+        except:
+            cookies = '<could not parse>'
+        try:
+            meta = pformat(self.META)
+        except:
+            meta = '<could not parse>'
+        return '<TastypieHttpRequest\nGET:%s,\nPOST:%s,\nCOOKIES:%s,\nMETA:%s>' % \
+            (get, post, cookies, meta)

@@ -3,6 +3,7 @@ import warnings
 import httplib
 import inspect
 import traceback
+import sys
 import django
 from django.conf import settings
 from django.conf.urls.defaults import patterns, url
@@ -45,6 +46,19 @@ try:
 except ImportError:
     def csrf_exempt(func):
         return func
+
+def to_one(to, attribute, full=True, *args, **kwargs):
+    kwargs['full'] = full
+    return ToOneField(to, attribute, *args, **kwargs)
+
+def to_many(to, attribute, full=True, *args, **kwargs):
+    kwargs['full'] = full
+    return ToManyField(to, attribute, *args, **kwargs)
+
+def remove(dict, key):
+    val = dict[key]
+    del dict[key]
+    return val
 
 class ResourceOptions(object):
     """
@@ -97,8 +111,10 @@ class ResourceOptions(object):
         if overrides.get('detail_allowed_methods', None) is None:
             overrides['detail_allowed_methods'] = allowed_methods
         
+        if overrides.get('related_allowed_methods', None) is None:
+            overrides['related_allowed_methods'] = overrides['detail_allowed_methods']
+        
         return object.__new__(type('ResourceOptions', (cls,), overrides))
-
 
 class DeclarativeMetaclass(type):
     def __new__(cls, name, bases, attrs):
@@ -130,6 +146,20 @@ class DeclarativeMetaclass(type):
         new_class = super(DeclarativeMetaclass, cls).__new__(cls, name, bases, attrs)
         opts = getattr(new_class, 'Meta', None)
         new_class._meta = ResourceOptions(opts)
+        
+        # Collect related fields into a hash
+        related = getattr(new_class, 'Related', None)
+        related_fields = {}
+        
+        # Handle related_fields.
+        if related:
+            for field in dir(related):
+                # No internals please.
+                if not field.startswith('_'):
+                    related_fields[field] = getattr(related, field)
+                    related_fields[field].contribute_to_class(new_class, field)
+        
+        new_class._related = related_fields
         
         if not getattr(new_class._meta, 'resource_name', None):
             # No ``resource_name`` provided. Attempt to auto-name the resource.
@@ -165,48 +195,6 @@ def immutable_method(member):
             
     return wrap
 
-def tastypie_view(view):
-    """
-    Wraps methods so they can be called in a more functional way as well
-    as handling exceptions better.
-    
-    Note that if ``BadRequest`` or an exception with a ``response`` attr
-    are seen, there is special handling to either present a message back
-    to the user or return the response traveling with the exception.
-    """
-    @csrf_exempt
-    def wrapper(request, *args, **kwargs):
-        try:
-            response = view(request, *args, **kwargs)
-            
-            if request.is_ajax():
-                # IE excessively caches XMLHttpRequests, so we're disabling
-                # the browser cache here.
-                # See http://www.enhanceie.com/ie/bugs.asp for details.
-                patch_cache_control(response, no_cache=True)
-            
-            return response
-        except (BadRequest, ApiFieldError), e:
-            return HttpBadRequest(e.args[0])
-        except ValidationError, e:
-            return HttpBadRequest(', '.join(e.messages))
-        except Exception, e:
-            if hasattr(e, 'response'):
-                return e.response
-            
-            # A real, non-expected exception.
-            # Handle the case where the full traceback is more helpful
-            # than the serialized error.
-            if settings.DEBUG and getattr(settings, 'TASTYPIE_FULL_DEBUG', False):
-                raise
-            
-            # Rather than re-raising, we're going to things similar to
-            # what Django does. The difference is returning a serialized
-            # error message.
-            return self._handle_500(request, e)
-    
-    return wrapper
-
 class Resource(object):
     """
     Handles the data, request dispatch and responding to requests.
@@ -238,7 +226,7 @@ class Resource(object):
         if response.has_content_body:
             try:
                 content = self.serialize(request, response.content, desired_format)
-            except ErrorResponse, e:
+            except ErrorResponse:
                 # Serialize with the default format, i.e, something that can't fail. Maybe this should be plain not JSON?
                 content = self.serialize(request, response.content)
         else:
@@ -304,6 +292,9 @@ class Resource(object):
                 response = e
                 print "except error response"
             except Exception, e:
+                if hasattr(e, 'response'):
+                    return e.response
+                
                 # Call the class error handler, otherwise bail
                 response = self.handle_error(request, e)
                 
@@ -375,39 +366,83 @@ class Resource(object):
             tp_url(self, r"/set/(?P<pk_list>\w[\w/;-]*)", self.wrap_view('get_multiple'), name="api_get_multiple"),
             tp_url(self, r"/(?P<pk>\w[\w/-]*)", self.wrap_view('dispatch_detail'), name="api_dispatch_detail", nest=True),
         ]
+        
+    def related_urls(self):
+        """
+        Generate related urls from the list of related resources  
+        """
+        def related(name, field):
+            # TODO: Further nesting
+            return url(r"(?P<related_name>%s)" % name, self.wrap_view('dispatch_related'), name="api_dispatch_nested")
+        
+        return [related(*item) for item in self._related.items()]
     
-    def nested(self, resource, name=None, key=None, view='dispatch_list'):
+    def dispatch_related(self, request, **kwargs):
         """
-        Helper function to create list of nested resources.
-        
-        If nested resource name is not given, it is inferred from the resource
-        name.
-        
-        Defaults to the list view, though that can be overridden.
-        
-        The foreign key defaults to the current resource name.
+        Dispatch a request for related resource.
         """
-        if inspect.isclass(resource):
-            resource = resource()
+        # Get the related field
+        related_name = remove(kwargs, 'related_name')
+        related_field = self._related[related_name]
         
-        if name is None:
-            name = resource._meta.resource_name + 's'
+        try:
+            obj = self.cached_obj_get(request=request, **self.remove_api_resource_names(kwargs))
+        except ObjectDoesNotExist:
+            return HttpNotFound()
+        except MultipleObjectsReturned:
+            return HttpMultipleChoices("More than one resource is found at this URI.")
         
-        if key is None:
-            key = self._meta.resource_name
+        type = 'detail' if isinstance(related_field, ToOneField) else 'list'
         
-        return url(r"/" + name, getattr(resource, view), {'tastypie_nested_key': key})
+        return self.dispatch('related_%s' % type, request, related_field=related_field, obj=obj, **kwargs)
     
-    def nested_urls(self):
+    def get_related_detail(self, request, related_field, obj, **kwargs):
         """
-        Nested resources that can go under the detail view. Format is
+        Get a single related object
+        """
+        # Create the bundle then 
+        bundle = self.build_bundle(obj=obj, request=request)
+        data = related_field.dehydrate(bundle)
+        data = self.alter_detail_data_to_serialize(request, data)
         
-        self.nested(PostResource, name="posts", key="author", view="dispatch_list")
-        with named parameters optional.
-        """
-        return []
+        return self.create_response(request, data)
     
-    #@immutable_method('_sub_urls')    
+    def get_related_list(self, request, related_field, obj, **kwargs):
+        """
+        Get a list of related objects
+        """
+        # Create the bundle then 
+        bundle = self.build_bundle(obj=obj, request=request)
+        objects = related_field.objects(bundle)
+        fk_resource = related_field.to_class()
+        
+        sorted_objects = fk_resource.apply_sorting(objects, options=request.GET)
+        
+        paginator = fk_resource._meta.paginator_class(request.GET, sorted_objects, resource_uri=fk_resource.get_resource_list_uri(), limit=fk_resource._meta.limit)
+        to_be_serialized = paginator.page()
+        
+        # Dehydrate the bundles in preparation for serialization.
+        bundles = [self.build_bundle(obj=obj, request=request) for obj in to_be_serialized['objects']]
+        to_be_serialized['objects'] = [fk_resource.full_dehydrate(bundle, request) for bundle in bundles]
+        to_be_serialized = self.alter_list_data_to_serialize(request, to_be_serialized)
+        
+        return self.create_response(request, to_be_serialized)
+    
+    def put_related_detail(self, request, related_field, obj, **kwargs):
+        pass
+    
+    def put_related_list(self, request, related_field, obj, **kwargs):
+        pass
+        
+    def post_related_detail(self, request, related_field, obj, **kwargs):
+        pass
+    
+    def post_related_list(self, request, related_field, obj, **kwargs):
+        pass
+    
+    def delete_related_list(self, request, related_field, obj, **kwargs):
+        pass
+        
     @property
     def detail_nested_urls(self):
         return [tp_url(r"", self.wrap_view('dispatch_detail'), name="api_dispatch_detail", nest=True)] + self.nested_urls()
@@ -579,14 +614,7 @@ class Resource(object):
         a single resource.
         
         Relies on ``Resource.dispatch`` for the heavy-lifting.
-        """
-        if 'tastypie_nesting' in kwargs:
-            nesting = kwargs['tastypie_nesting']
-            del kwargs['tastypie_nesting']
-            
-            if nesting:
-                return self.dispatch_nested(request, nesting, **kwargs)
-        
+        """        
         return self.dispatch('detail', request, **kwargs)
     
     def dispatch(self, request_type, request, **kwargs):
@@ -597,6 +625,8 @@ class Resource(object):
         
         # Upgrade request to a TastypieHTTPRequest
         self.wrap_request(request)
+        
+        del kwargs['tastypie_nesting']
         
         allowed_methods = getattr(self._meta, "%s_allowed_methods" % request_type, None)
         request_method = self.method_check(request, allowed=allowed_methods)
@@ -849,7 +879,7 @@ class Resource(object):
     
     # Data preparation.
     
-    def full_dehydrate(self, bundle):
+    def full_dehydrate(self, bundle, request):
         """
         Given a bundle with an object instance, extract the information from it
         to populate the resource.
@@ -861,7 +891,7 @@ class Resource(object):
                 field_object.api_name = self._meta.api_name
                 field_object.resource_name = self._meta.resource_name
                 
-            bundle.data[field_name] = field_object.dehydrate(bundle)
+            bundle.data[field_name] = field_object.dehydrate(bundle, request)
             
             # Check for an optional method to do further dehydration.
             method = getattr(self, "dehydrate_%s" % field_name, None)
@@ -1391,6 +1421,8 @@ class Resource(object):
         of serialized data.
         """
         deserialized = self.deserialize(request)
+        print "deserial"
+        print deserialized
         deserialized = self.alter_deserialized_detail_data(request, deserialized)
         bundle = self.build_bundle(data=dict_strip_unicode_keys(deserialized), request=request)
         self.is_valid(bundle, request)

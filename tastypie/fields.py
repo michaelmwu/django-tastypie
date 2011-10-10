@@ -639,6 +639,26 @@ class ToManyField(RelatedField):
     def __init__(self, to, attribute, related_name=None, default=NOT_PROVIDED, null=False, blank=False, readonly=False, full=False, unique=False, help_text=None):
         super(ToManyField, self).__init__(to, attribute, related_name=related_name, default=default, null=null, blank=blank, readonly=readonly, full=full, unique=unique, help_text=help_text)
         self.m2m_bundles = []
+
+    def objects(self, bundle):
+        if not bundle.obj or not bundle.obj.pk:
+            if not self.null:
+                raise ApiFieldError("The model '%r' does not have a primary key and can not be used in a ToMany context." % bundle.obj)
+            
+            return []
+        
+        if isinstance(self.attribute, basestring):
+            the_m2ms = getattr(bundle.obj, self.attribute)
+        elif callable(self.attribute):
+            the_m2ms = self.attribute(bundle)
+        
+        if not the_m2ms:
+            if not self.null:
+                raise ApiFieldError("The model '%r' has an empty attribute '%s' and doesn't allow a null value." % (bundle.obj, self.attribute))
+            
+            return []
+        
+        return the_m2ms.all()
     
     def dehydrate(self, bundle):
         if not bundle.obj or not bundle.obj.pk:

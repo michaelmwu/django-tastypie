@@ -6,7 +6,7 @@ import traceback
 import sys
 import django
 from django.conf import settings
-from django.conf.urls.defaults import patterns, url
+from django.conf.urls.defaults import patterns, url, include
 from django.core.exceptions import ObjectDoesNotExist, MultipleObjectsReturned, ValidationError
 from django.core.urlresolvers import NoReverseMatch, reverse, resolve, Resolver404, get_script_prefix
 from django.db.models.sql.constants import QUERY_TERMS, LOOKUP_SEP
@@ -27,7 +27,7 @@ from tastypie.request import TastypieHTTPRequest
 from tastypie.response import Response, ErrorResponse
 from tastypie.serializers import Serializer
 from tastypie.throttle import BaseThrottle
-from tastypie.utils import as_tuple, is_valid_jsonp_callback_value, dict_strip_unicode_keys, trailing_slash, tp_url
+from tastypie.utils import as_tuple, cached_function, cached_property, is_valid_jsonp_callback_value, dict_strip_unicode_keys, trailing_slash
 from tastypie.utils.mime import determine_format, build_content_type
 from tastypie.validation import Validation
 try:
@@ -56,6 +56,9 @@ def to_many(to, attribute, full=True, *args, **kwargs):
     return ToManyField(to, attribute, *args, **kwargs)
 
 def remove(dict, key):
+    """
+    Remove and return a key from the dictionary
+    """
     val = dict[key]
     del dict[key]
     return val
@@ -92,6 +95,8 @@ class ResourceOptions(object):
     include_resource_uri = True
     include_absolute_url = False
     always_return_data = False
+    set_url = True
+    detail_url = True
     
     def __new__(cls, meta=None):
         overrides = {}
@@ -353,29 +358,99 @@ class Resource(object):
         """
         return reverse(name, args=args, kwargs=kwargs)
     
-    #@immutable_method('_base_urls')
+    # URL helper functions
+    
+    def url(self, regex, view, kwargs=None, name=None, prefix=''):
+        """
+        Basic url helper function
+        """        
+        
+        return url(r"^" + regex + trailing_slash() + r"$", view, kwargs, name, prefix)
+
+    def nest(self, regex, view, kwargs=None, name=None, prefix=''):
+        """
+        Basic url helper with nesting
+        """        
+        if len(self.nested_urls()) > 0:
+            return [
+                url(r"^" + regex + trailing_slash() + r"$", view, kwargs, name, prefix),
+                (regex + "/", include(self.nested_urls()))
+            ]
+        else:
+            return (url(regex + trailing_slash() + r"$", view, kwargs, name, prefix),)
+    
+    def list_url(self):
+        """
+        Route to the correct view for the list url
+        """
+        return self.url(r"", self.wrap_view('dispatch_list'), name="api_dispatch_list")
+    
+    @cached_function
     def base_urls(self):
         """
         The standard URLs this ``Resource`` should respond to.
         """
         # Due to the way Django parses URLs, ``get_multiple`` won't work without
         # a trailing slash.
-        return [
-            tp_url(self, r"", self.wrap_view('dispatch_list'), name="api_dispatch_list"),
-            tp_url(self, r"/schema", self.wrap_view('get_schema'), name="api_get_schema"),
-            tp_url(self, r"/set/(?P<pk_list>\w[\w/;-]*)", self.wrap_view('get_multiple'), name="api_get_multiple"),
-            tp_url(self, r"/(?P<pk>\w[\w/-]*)", self.wrap_view('dispatch_detail'), name="api_dispatch_detail", nest=True),
-        ]
         
+        urls = [
+            self.list_url(),
+            self.url(r"/schema", self.wrap_view('get_schema'), name="api_get_schema"),
+        ]
+ 
+        if self._meta.detail_url:
+            urls.extend(self.nest(r"/(?P<pk>\w[\w-]*)", self.wrap_view('dispatch_detail'), name="api_dispatch_detail"))
+
+        if self._meta.set_url:
+            urls.append(self.url(r"/set/(?P<pk_list>\w[\w/;-]*)", self.wrap_view('get_multiple'), name="api_get_multiple"))
+            
+        return urls
+        
+    @cached_function
     def related_urls(self):
         """
         Generate related urls from the list of related resources  
         """
         def related(name, field):
             # TODO: Further nesting
-            return url(r"(?P<related_name>%s)" % name, self.wrap_view('dispatch_related'), name="api_dispatch_nested")
+            return self.url(r"(?P<related_name>%s)" % name, self.wrap_view('dispatch_related'), name="api_dispatch_nested")
         
         return [related(*item) for item in self._related.items()]
+    
+    def detail_actions(self):
+        """
+        Actions on the detail view. List of urls that can be append to the detail url 
+        """
+        return []
+    
+    @cached_function
+    def nested_urls(self):
+        """
+        Function collecting nested urls under the detail view together
+        """
+        return patterns('', *(self.related_urls() + self.detail_actions()))
+
+    def override_urls(self):
+        """
+        A hook for adding your own URLs or overriding the default URLs.
+        """
+        return []
+    
+    @cached_property
+    def urls(self):
+        """
+        The endpoints this ``Resource`` responds to.
+        
+        Mostly a standard URLconf, this is suitable for either automatic use
+        when registered with an ``Api`` class or for including directly in
+        a URLconf should you choose to.
+        """
+        urls = self.override_urls() + self.base_urls()
+        urls = patterns('', *urls)
+        urlpatterns = patterns('',
+            (r"^(?P<resource_name>%s)" % self._meta.resource_name, include(urls))
+        )
+        return urlpatterns
     
     def dispatch_related(self, request, **kwargs):
         """
@@ -442,10 +517,6 @@ class Resource(object):
     
     def delete_related_list(self, request, related_field, obj, **kwargs):
         pass
-        
-    @property
-    def detail_nested_urls(self):
-        return [tp_url(r"", self.wrap_view('dispatch_detail'), name="api_dispatch_detail", nest=True)] + self.nested_urls()
     
     def dispatch_nested(self, request, nesting, **kwargs):
         """
@@ -467,44 +538,6 @@ class Resource(object):
         
         # Call the view with the inserted parent key
         view(*args, **view_kwargs)
-    
-    def override_urls(self):
-        """
-        A hook for adding your own URLs or overriding the default URLs.
-        """
-        return []
-    
-    #@immutable_method('_urls')
-    @property
-    def urls(self):
-        """
-        The endpoints this ``Resource`` responds to.
-        
-        Mostly a standard URLconf, this is suitable for either automatic use
-        when registered with an ``Api`` class or for including directly in
-        a URLconf should you choose to.
-        """
-        urls = self.override_urls() + self.base_urls()
-        urlpatterns = patterns('',
-            *map(lambda x: x.prefix_url(), urls)
-        )
-        return urlpatterns
-
-    #@immutable_method('_raw_urls')
-    @property
-    def raw_urls(self):
-        """
-        The endpoints this ``Resource`` responds to.
-        
-        Mostly a standard URLconf, this is suitable for either automatic use
-        when registered with an ``Api`` class or for including directly in
-        a URLconf should you choose to.
-        """
-        urls = self.override_urls() + self.base_urls()
-        urlpatterns = patterns('',
-            *map(lambda x: x.raw_url(), urls)
-        )
-        return urlpatterns
     
     def determine_format(self, request):
         """
@@ -628,8 +661,9 @@ class Resource(object):
         
         if 'tastypie_nesting' in kwargs:
             del kwargs['tastypie_nesting']
-        
+            
         allowed_methods = getattr(self._meta, "%s_allowed_methods" % request_type, None)
+
         request_method = self.method_check(request, allowed=allowed_methods)
         
         method = getattr(self, "%s_%s" % (request_method, request_type), None)
@@ -1422,8 +1456,6 @@ class Resource(object):
         of serialized data.
         """
         deserialized = self.deserialize(request)
-        print "deserial"
-        print deserialized
         deserialized = self.alter_deserialized_detail_data(request, deserialized)
         bundle = self.build_bundle(data=dict_strip_unicode_keys(deserialized), request=request)
         self.is_valid(bundle, request)

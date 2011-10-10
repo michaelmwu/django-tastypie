@@ -6,7 +6,7 @@ from django.core.urlresolvers import reverse
 from django.http import HttpResponse
 from tastypie.exceptions import NotRegistered
 from tastypie.serializers import Serializer
-from tastypie.utils import trailing_slash, is_valid_jsonp_callback_value
+from tastypie.utils import trailing_slash, is_valid_jsonp_callback_value, cached_property
 from tastypie.utils.mime import determine_format, build_content_type
 
 
@@ -85,7 +85,7 @@ class Api(object):
         """
         return []
     
-    @property
+    @cached_property
     def urls(self):
         """
         Provides URLconf details for the ``Api`` and all registered
@@ -116,6 +116,8 @@ class Api(object):
             api_name = self.api_name
         
         for name in sorted(self._registry.keys()):
+            print name
+            print self._registry[name].urls
             available_resources[name] = {
                 'list_endpoint': self._build_reverse_url("api_dispatch_list", kwargs={
                     'api_name': api_name,

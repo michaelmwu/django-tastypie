@@ -586,16 +586,26 @@ class ToOneField(RelatedField):
         self.fk_resource = None
     
     def dehydrate(self, bundle, request):
-        try:
-            foreign_obj = getattr(bundle.obj, self.attribute)
-        except ObjectDoesNotExist:
-            foreign_obj = None
+        names = self.attribute.split('__')
+        obj = bundle.obj
         
-        if not foreign_obj:
-            if not self.null:
-                raise ApiFieldError("The model '%r' has an empty attribute '%s' and doesn't allow a null value." % (bundle.obj, self.attribute))
+        # Go down and try attributes
+        for attr in names:
+            try:
+                foreign_obj = getattr(obj, attr)
+            except ObjectDoesNotExist:
+                foreign_obj = None
             
-            return None
+            if not foreign_obj:
+                if not self.null:
+                    raise ApiFieldError("The model '%r' has an empty attribute '%s' and doesn't allow a null value." % (bundle.obj, self.attribute))
+                
+                return None
+            
+            if callable(foreign_obj):
+                foreign_obj = foreign_obj
+            
+            obj = foreign_obj
         
         self.fk_resource = self.get_related_resource(foreign_obj)
         fk_bundle = Bundle(obj=foreign_obj, request=bundle.request)
@@ -648,7 +658,26 @@ class ToManyField(RelatedField):
             return []
         
         if isinstance(self.attribute, basestring):
-            the_m2ms = getattr(bundle.obj, self.attribute)
+            names = self.attribute.split('__')
+            obj = bundle.obj
+        
+            # Go down and try attributes
+            for attr in names:
+                try:
+                    the_m2ms = getattr(obj, attr)
+                except ObjectDoesNotExist:
+                    the_m2ms = None
+            
+                if not the_m2ms:
+                    if not self.null:
+                        raise ApiFieldError("The model '%r' has an empty attribute '%s' and doesn't allow a null value." % (bundle.obj, self.attribute))
+                
+                return None
+            
+                if callable(the_m2ms):
+                    the_m2ms = the_m2ms
+            
+                obj = the_m2ms
         elif callable(self.attribute):
             the_m2ms = self.attribute(bundle)
         

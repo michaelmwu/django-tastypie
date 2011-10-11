@@ -11,14 +11,14 @@ from django.core.exceptions import ObjectDoesNotExist, MultipleObjectsReturned, 
 from django.core.urlresolvers import NoReverseMatch, reverse, resolve, Resolver404, get_script_prefix
 from django.db.models.sql.constants import QUERY_TERMS, LOOKUP_SEP
 from django.db.models import Q
-from django.http import HttpResponse, HttpResponseNotFound
+from django.http import HttpResponse, HttpResponseNotFound, BadHeaderError
 from django.utils.cache import patch_cache_control
 from tastypie.authentication import Authentication
 from tastypie.authorization import ReadOnlyAuthorization
 from tastypie.bundle import Bundle
 from tastypie.cache import NoCache
 from tastypie.constants import ALL, ALL_WITH_RELATIONS
-from tastypie.exceptions import NotFound, BadRequest, InvalidFilterError, HydrationError, InvalidSortError, ImmediateHttpResponse
+from tastypie.exceptions import *
 from tastypie.fields import *
 from tastypie.http import *
 from tastypie.paginator import Paginator
@@ -80,6 +80,7 @@ class ResourceOptions(object):
     paginator_class = Paginator
     allowed_methods = ['get', 'post', 'put', 'delete']
     list_allowed_methods = None
+    multiple_allowed_methods = ['get']
     detail_allowed_methods = None
     limit = getattr(settings, 'API_LIMIT_PER_PAGE', 20)
     api_name = None
@@ -225,6 +226,9 @@ class Resource(object):
         raise AttributeError(name)
     
     def render(self, request, response):
+        """
+        Render a response object into a serialized response.
+        """
         desired_format = self.determine_format(request)
         response.media_type = build_content_type(desired_format)
         
@@ -242,8 +246,6 @@ class Resource(object):
         # Set the headers
         for (key, val) in response.items():
             resp[key] = val
-            
-        print "MASSIVE ERROR???"
 
         return resp
     
@@ -264,13 +266,25 @@ class Resource(object):
             error_content['errors'] = e.errors
         
         if settings.DEBUG and e.traceback:
-            trace = '\n'.join(traceback.format_exception(*e.traceback))
+            error_content['trace'] = '\n'.join(traceback.format_exception(*e.traceback))
         
-        return Response(e.messages, status=e.status_code)
+        return Response(error_content, status=e.status_code)
     
     def handle_error(self, request, e):
+        """
+        Generate error responses from exceptions
+        """
         if isinstance(e, (NotFound, ObjectDoesNotExist)):
-            return Response(message="Not found", status=httplib.NOT_FOUND)
+            return ErrorResponse(message="Not found", status=httplib.NOT_FOUND)
+        
+        if isinstance(e, MultipleObjectsReturned):
+            return ErrorResponse(message="More than one resource is found at this URI.", status=httplib.MULTIPLE_CHOICES)
+
+        if isinstance(e, BadHeaderError):
+            return ErrorResponse(message="Bad headers", status=httplib.BAD_REQUEST)
+
+        if isinstance(e, TastypieError):
+            return ErrorResponse(e.message, status=e.status_code)
     
     def wrap_view(self, view):
         """
@@ -295,29 +309,27 @@ class Resource(object):
             except ErrorResponse, e:
                 # If an error response was raised, use it
                 response = e
-                print "except error response"
             except Exception, e:
                 if hasattr(e, 'response'):
                     return e.response
+                
+                # If we are in full debug mode, reraise to get a full traceback
+                # instead of a serialized error response.
+                if settings.DEBUG and getattr(settings, 'TASTYPIE_FULL_DEBUG', False):
+                    raise
                 
                 # Call the class error handler, otherwise bail
                 response = self.handle_error(request, e)
                 
                 if response is None:
-                    # A real, non-expected exception.
-                    # If we are in full debug mode, reraise to get a full traceback
-                    # instead of a serialized error response.
-                    if settings.DEBUG and getattr(settings, 'TASTYPIE_FULL_DEBUG', False):
-                        raise
-                    else:
-                        # Otherwise return a serialized error response
-                        response = self._handle_500(request, e)
+                    # A real, non-expected exception. Return a serialized error response
+                    response = self._handle_500(request, e)
             
             if isinstance(response, HttpResponse):
                 return response
             
+            # Format errors
             if isinstance(response, ErrorResponse):
-                # Format the errors
                 response = self.format_error(response)
             
             return self.render(request, response)
@@ -341,14 +353,16 @@ class Resource(object):
                     request_repr = repr(request)
                 except:
                     request_repr = "Request repr() unavailable"
-            
+                
+                the_trace = '\n'.join(traceback.format_exception(*(sys.exc_info())))
+                
                 message = "%s\n\n%s" % (the_trace, request_repr)
                 mail_admins(subject, message, fail_silently=True)
         
         # Return some canned error
         error_message = getattr(settings, 'TASTYPIE_CANNED_ERROR', "Sorry, this request could not be processed. Please try again later."),
         
-        return ErrorResponse(data, message=error_message, status=httplib.INTERNAL_SERVER_ERROR)
+        return ErrorResponse(message=error_message, status=httplib.INTERNAL_SERVER_ERROR)
     
     def _build_reverse_url(self, name, args=None, kwargs=None):
         """
@@ -478,7 +492,7 @@ class Resource(object):
         """
         # Create the bundle then 
         bundle = self.build_bundle(obj=obj, request=request)
-        data = related_field.dehydrate(bundle)
+        data = related_field.dehydrate(bundle, request)
         data = self.alter_detail_data_to_serialize(request, data)
         
         return self.create_response(request, data)
@@ -665,12 +679,13 @@ class Resource(object):
             
         allowed_methods = getattr(self._meta, "%s_allowed_methods" % request_type, None)
 
-        request_method = self.method_check(request, allowed=allowed_methods)
+        request_method = self.method_check(request, allowed=allowed_methods, action=request_type)
         
         method = getattr(self, "%s_%s" % (request_method, request_type), None)
         
         if method is None:
-            raise ErrorResponse(status=httplib.NOT_IMPLEMENTED)
+            raise TastypieError('%s for action %s not implemented' % (request_method, request_type),
+                                status=httplib.NOT_IMPLEMENTED)
         
         self.is_authenticated(request)
         #self.is_authorized(request)
@@ -724,7 +739,7 @@ class Resource(object):
         
         return kwargs_subset
     
-    def method_check(self, request, allowed=None):
+    def method_check(self, request, allowed=None, action=None):
         """
         Ensures that the HTTP method used on the request is allowed to be
         
@@ -747,13 +762,15 @@ class Resource(object):
         request_method = request.method.lower()
         
         if request_method == "options":
-            allows = ','.join(map(str.upper, allowed))
-            response = HttpResponse(allows)
-            response['Allow'] = allows
-            raise ImmediateHttpResponse(response=response)
+            raise MethodNotAllowed(allows)
         
         if not request_method in allowed:
-            raise ImmediateHttpResponse(response=HttpMethodNotAllowed())
+            if action:
+                message = '%s for action %s not implemented' % (request_method, action)
+            else:
+                message = '%s not implemented for this endpoint' % request_method
+            
+            raise TastypieError(message, status=httplib.BAD_REQUEST)
         
         return request_method
 
@@ -904,7 +921,7 @@ class Resource(object):
         chomped_uri = uri
         
         if prefix and chomped_uri.startswith(prefix):
-            chomped_uri = chomped_uri[len(prefix)-1:]
+            chomped_uri = chomped_uri[len(prefix) - 1:]
         
         try:
             view, args, kwargs = resolve(chomped_uri)
@@ -963,7 +980,7 @@ class Resource(object):
                 continue
 
             if field_object.attribute:
-                value = field_object.hydrate(bundle, request=request)
+                value = field_object.hydrate(bundle, request)
                 
                 if value is not None or field_object.null:
                     # We need to avoid populating M2M data here as that will
@@ -984,7 +1001,7 @@ class Resource(object):
             if method:
                 bundle = method(bundle)
         
-        bundle = self.hydrate(bundle, request=request)
+        bundle = self.hydrate(bundle, request)
         return bundle
     
     def hydrate(self, bundle, request):
@@ -1015,7 +1032,7 @@ class Resource(object):
                 # unmodified. It's up to the user's code to handle this.
                 # The ``ModelResource`` provides a working baseline
                 # in this regard.
-                bundle.data[field_name] = field_object.hydrate_m2m(bundle, request=request)
+                bundle.data[field_name] = field_object.hydrate_m2m(bundle, request)
         
         for field_name, field_object in self.fields.items():
             if not getattr(field_object, 'is_m2m', False):
@@ -1353,7 +1370,7 @@ class Resource(object):
             return HttpMultipleChoices("More than one resource is found at this URI.")
         
         bundle = self.build_bundle(obj=obj, request=request)
-        bundle = self.full_dehydrate(bundle, request=request)
+        bundle = self.full_dehydrate(bundle, request)
         bundle = self.alter_detail_data_to_serialize(request, bundle)
         return self.create_response(request, bundle)
     
@@ -1370,7 +1387,7 @@ class Resource(object):
         Return ``HttpAccepted`` (202 Accepted) if
         ``Meta.always_return_data = True``.
         """
-        deserialized = self.deserialize(request, format=request.META.get('CONTENT_TYPE', 'application/json'))
+        deserialized = self.deserialize(request)
         deserialized = self.alter_deserialized_list_data(request, deserialized)
         
         if not 'objects' in deserialized:
@@ -1397,7 +1414,7 @@ class Resource(object):
             return HttpNoContent()
         else:
             to_be_serialized = {}
-            to_be_serialized['objects'] = [self.full_dehydrate(bundle, request=request) for bundle in bundles_seen]
+            to_be_serialized['objects'] = [self.full_dehydrate(bundle, request) for bundle in bundles_seen]
             to_be_serialized = self.alter_list_data_to_serialize(request, to_be_serialized)
             return self.create_response(request, to_be_serialized, response_class=HttpAccepted)
     
@@ -1420,7 +1437,7 @@ class Resource(object):
         ``Meta.always_return_data = True``, return ``HttpAccepted`` (202
         Accepted).
         """
-        deserialized = self.deserialize(request, format=request.META.get('CONTENT_TYPE', 'application/json'))
+        deserialized = self.deserialize(request)
         deserialized = self.alter_deserialized_detail_data(request, deserialized)
         bundle = self.build_bundle(data=dict_strip_unicode_keys(deserialized), request=request)
         self.is_valid(bundle, request)
@@ -1431,7 +1448,7 @@ class Resource(object):
             if not self._meta.always_return_data:
                 return HttpNoContent()
             else:
-                updated_bundle = self.full_dehydrate(updated_bundle, request=request)
+                updated_bundle = self.full_dehydrate(updated_bundle, request)
                 updated_bundle = self.alter_detail_data_to_serialize(request, updated_bundle)
                 return self.create_response(request, updated_bundle, response_class=HttpAccepted)
         except (NotFound, MultipleObjectsReturned):
@@ -1441,7 +1458,7 @@ class Resource(object):
             if not self._meta.always_return_data:
                 return HttpCreated(location=location)
             else:
-                updated_bundle = self.full_dehydrate(updated_bundle)
+                updated_bundle = self.full_dehydrate(updated_bundle, request)
                 updated_bundle = self.alter_detail_data_to_serialize(request, updated_bundle)
                 return self.create_response(request, updated_bundle, response_class=HttpCreated, location=location)
     
@@ -1466,7 +1483,7 @@ class Resource(object):
         if not self._meta.always_return_data:
             return HttpCreated(location=location)
         else:
-            updated_bundle = self.full_dehydrate(updated_bundle, request=request)
+            updated_bundle = self.full_dehydrate(updated_bundle, request)
             updated_bundle = self.alter_detail_data_to_serialize(request, updated_bundle)
             return self.create_response(request, updated_bundle, response_class=HttpCreated, location=location)
     
@@ -1479,7 +1496,7 @@ class Resource(object):
         
         If a new resource is created, return ``HttpCreated`` (201 Created).
         """
-        return HttpNotImplemented()
+        raise TastypieError('Post to detail not implemented', status=httplib.NOT_IMPLEMENTED)
     
     def delete_list(self, request, **kwargs):
         """
@@ -1516,7 +1533,7 @@ class Resource(object):
         
         Should return a HttpResponse (200 OK).
         """
-        self.method_check(request, allowed=['get'])
+        self.method_check(request, allowed=['get'], action='schema')
         self.is_authenticated(request)
         self.throttle_check(request)
         self.log_throttled_access(request)
@@ -1532,7 +1549,9 @@ class Resource(object):
         
         Should return a HttpResponse (200 OK).
         """
-        self.method_check(request, allowed=['get'])
+        allowed_methods = self._meta.multiple_allowed_methods
+        
+        self.method_check(request, allowed=allowed_methods, action='multiple')
         self.is_authenticated(request)
         self.throttle_check(request)
         
@@ -1545,7 +1564,7 @@ class Resource(object):
             try:
                 obj = self.obj_get(request, pk=pk)
                 bundle = self.build_bundle(obj=obj, request=request)
-                bundle = self.full_dehydrate(bundle, request=request)
+                bundle = self.full_dehydrate(bundle, request)
                 objects.append(bundle)
             except ObjectDoesNotExist:
                 not_found.append(pk)
@@ -1933,7 +1952,7 @@ class ModelResource(Resource):
         for key, value in kwargs.items():
             setattr(bundle.obj, key, value)
         
-        bundle = self.full_hydrate(bundle, request=request)
+        bundle = self.full_hydrate(bundle, request)
 
         # Save FKs just in case.
         self.save_related(bundle)
@@ -1942,7 +1961,7 @@ class ModelResource(Resource):
         bundle.obj.save()
         
         # Now pick up the M2M bits.
-        m2m_bundle = self.hydrate_m2m(bundle, request=request)
+        m2m_bundle = self.hydrate_m2m(bundle, request)
         self.save_m2m(m2m_bundle)
         return bundle
     
@@ -1956,7 +1975,7 @@ class ModelResource(Resource):
             try:
                 bundle.obj = self.get_object_list(request).model()
                 bundle.data.update(kwargs)
-                bundle = self.full_hydrate(bundle, request=request)
+                bundle = self.full_hydrate(bundle, request)
                 lookup_kwargs = kwargs.copy()
                 lookup_kwargs.update(dict(
                     (k, getattr(bundle.obj, k))
@@ -1974,7 +1993,7 @@ class ModelResource(Resource):
         
         self.is_authorized(request, bundle.obj)
         
-        bundle = self.full_hydrate(bundle, request=request)
+        bundle = self.full_hydrate(bundle, request)
 
         # Save FKs just in case.
         self.save_related(bundle)
@@ -1983,7 +2002,7 @@ class ModelResource(Resource):
         bundle.obj.save()
         
         # Now pick up the M2M bits.
-        m2m_bundle = self.hydrate_m2m(bundle, request=request)
+        m2m_bundle = self.hydrate_m2m(bundle, request)
         self.save_m2m(m2m_bundle)
         return bundle
     

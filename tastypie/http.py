@@ -17,7 +17,7 @@ class HttpCreated(HttpResponse):
         super(HttpCreated, self).__init__(*args, **kwargs)
         self['Location'] = location
 
-
+### Deprecating these
 class HttpAccepted(HttpResponse):
     status_code = 202
 

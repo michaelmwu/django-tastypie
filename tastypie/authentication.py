@@ -6,7 +6,7 @@ import uuid
 
 from django.conf import settings
 from django.contrib.auth import authenticate
-from tastypie.http import HttpUnauthorized
+from tastypie.exceptions import Unauthorized
 
 try:
     from hashlib import sha1
@@ -60,10 +60,8 @@ class BasicAuthentication(Authentication):
         self.realm = realm
     
     def _unauthorized(self):
-        response = HttpUnauthorized()
         # FIXME: Sanitize realm.
-        response['WWW-Authenticate'] = 'Basic Realm="%s"' % self.realm
-        return response
+        raise Unauthorized('Basic authentication required', 'Basic Realm="%s"' % self.realm)
     
     def is_authenticated(self, request, **kwargs):
         """
@@ -87,7 +85,7 @@ class BasicAuthentication(Authentication):
         bits = user_pass.split(':')
         
         if len(bits) != 2:
-            return self._unauthorized()
+            self._unauthorized()
         
         if self.backend:
             user = self.backend.authenticate(username=bits[0], password=bits[1])
@@ -95,7 +93,7 @@ class BasicAuthentication(Authentication):
             user = authenticate(username=bits[0], password=bits[1])
         
         if user is None:
-            return self._unauthorized()
+            self._unauthorized()
         
         request.user = user
         return True
@@ -118,7 +116,7 @@ class ApiKeyAuthentication(Authentication):
     as suits your needs.
     """
     def _unauthorized(self):
-        return HttpUnauthorized()
+        raise Unauthorized('API Key authentication required')
     
     def is_authenticated(self, request, **kwargs):
         """
@@ -188,11 +186,9 @@ class DigestAuthentication(Authentication):
         self.realm = realm
     
     def _unauthorized(self):
-        response = HttpUnauthorized()
         new_uuid = uuid.uuid4()
         opaque = hmac.new(str(new_uuid), digestmod=sha1).hexdigest()
-        response['WWW-Authenticate'] = python_digest.build_digest_challenge(time.time(), getattr(settings, 'SECRET_KEY', ''), self.realm, opaque, False)
-        return response
+        raise Unauthorized('Digest authentication required', python_digest.build_digest_challenge(time.time(), getattr(settings, 'SECRET_KEY', ''), self.realm, opaque, False))
     
     def is_authenticated(self, request, **kwargs):
         """

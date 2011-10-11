@@ -132,7 +132,6 @@ class Response(HttpHeaders):
     """
 
     def __init__(self, content=None, status=None, headers=None):
-        print "RESPONSE INIT"
         super(Response, self).__init__(status=status, headers=headers)
         #self.media_type = None
         self.has_content_body = content is not None
@@ -158,11 +157,13 @@ class ErrorResponse(Response):
     Errors along with a status code, headers, and cookies
     """
 
-    def __init__(self, message="", messages=None, errors=None, status=httplib.BAD_REQUEST, headers=None, traceback=False):
-        print "ERRORRESPONSE INIT"
+    def __init__(self, message="", messages=None, errors=None, status=httplib.BAD_REQUEST, headers=None, traceback=None):
         super(ErrorResponse, self).__init__(content=None, status=status, headers=headers)
         
         import sys
+        
+        if traceback is None:
+            traceback = getattr(settings, 'TASTYPIE_FULL_DEBUG', False)
         
         if traceback:
             (type, value, tb) = sys.exc_info()

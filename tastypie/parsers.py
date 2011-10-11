@@ -21,6 +21,8 @@ from django.http.multipartparser import MultiPartParser as DjangoMultiPartParser
 from django.http.multipartparser import MultiPartParserError
 from django.utils import simplejson as json
 
+from tastypie.exceptions import BadRequest
+
 try:
     import lxml
     from lxml.etree import parse as parse_xml
@@ -92,14 +94,18 @@ class JSONParser(BaseParser):
         
         `data` will be an object which is the parsed content of the response.
         """
+        print "CONTENT"
+        content = content.read()
+        print content
+        print "end content"
+        
         try:
             if getattr(content, 'read', None):
                 return json.load(content)
             else:
                 return json.loads(content)
         except ValueError, exc:
-            raise ErrorResponse(httplib.BAD_REQUEST,
-                                {'detail': 'JSON parse error - %s' % unicode(exc)})
+            raise BadRequest('JSON parse error - %s' % unicode(exc))
 
 if yaml:
     class YAMLParser(BaseParser):
@@ -118,8 +124,7 @@ if yaml:
             try:
                 return yaml.safe_load(content)
             except ValueError, exc:
-                raise ErrorResponse(httplib.BAD_REQUEST,
-                                    {'detail': 'YAML parse error - %s' % unicode(exc)})
+                raise BadRequest('YAML parse error - %s' % unicode(exc))
 else:
     YAMLParser = None
 

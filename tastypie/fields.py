@@ -133,7 +133,7 @@ class ApiField(object):
         """
         return value
     
-    def hydrate(self, bundle):
+    def hydrate(self, bundle, request):
         """
         Takes data stored in the bundle for the field and returns it. Used for
         taking simple data and building a instance object.
@@ -207,8 +207,8 @@ class AttachmentFileField(FileField):
         }
     """
         
-    def hydrate(self, obj, request=None):
-        value = super(FileField, self).hydrate(obj)
+    def hydrate(self, obj, request):
+        value = super(FileField, self).hydrate(obj, request)
         field = value.get('attachment', None)
         if field and request:
             return request.FILES.get(field, None)
@@ -326,8 +326,8 @@ class DateField(ApiField):
         
         return value
     
-    def hydrate(self, bundle):
-        value = super(DateField, self).hydrate(bundle)
+    def hydrate(self, bundle, request):
+        value = super(DateField, self).hydrate(bundle, request)
         
         if value and not hasattr(value, 'year'):
             try:
@@ -364,8 +364,8 @@ class DateTimeField(ApiField):
         
         return value
     
-    def hydrate(self, bundle):
-        value = super(DateTimeField, self).hydrate(bundle)
+    def hydrate(self, bundle, request):
+        value = super(DateTimeField, self).hydrate(bundle, request)
         
         if value and not hasattr(value, 'year'):
             try:
@@ -510,7 +510,7 @@ class RelatedField(ApiField):
         
         return self._to_class
     
-    def dehydrate_related(self, bundle, related_resource):
+    def dehydrate_related(self, bundle, related_resource, request):
         """
         Based on the ``full_resource``, returns either the endpoint or the data
         from ``full_dehydrate`` for the related resource.
@@ -521,9 +521,9 @@ class RelatedField(ApiField):
         else:
             # ZOMG extra data and big payloads.
             bundle = related_resource.build_bundle(obj=related_resource.instance, request=bundle.request)
-            return related_resource.full_dehydrate(bundle)
+            return related_resource.full_dehydrate(bundle, request)
     
-    def build_related_resource(self, value, request=None):
+    def build_related_resource(self, value, request):
         """
         Used to ``hydrate`` the data provided. If just a URL is provided,
         the related resource is attempted to be loaded. If a
@@ -537,7 +537,7 @@ class RelatedField(ApiField):
             try:
                 obj = self.fk_resource.get_via_uri(value)
                 bundle = self.fk_resource.build_bundle(obj=obj, request=request)
-                return self.fk_resource.full_dehydrate(bundle)
+                return self.fk_resource.full_dehydrate(bundle, request)
             except ObjectDoesNotExist:
                 raise ApiFieldError("Could not find the provided object via resource URI '%s'." % value)
         elif hasattr(value, 'items'):
@@ -549,7 +549,7 @@ class RelatedField(ApiField):
             # resource. If not, we'll just return a populated bundle instead
             # of mistakenly updating something that should be read-only.
             if not self.fk_resource.can_update():
-                return self.fk_resource.full_hydrate(self.fk_bundle)
+                return self.fk_resource.full_hydrate(self.fk_bundle, request)
             
             try:
                 return self.fk_resource.obj_update(self.fk_bundle, **value)
@@ -563,12 +563,12 @@ class RelatedField(ApiField):
                     
                     return self.fk_resource.obj_update(self.fk_bundle, **lookup_kwargs)
                 except NotFound:
-                    return self.fk_resource.full_hydrate(self.fk_bundle)
+                    return self.fk_resource.full_hydrate(self.fk_bundle, request)
             except MultipleObjectsReturned:
-                return self.fk_resource.full_hydrate(self.fk_bundle)
+                return self.fk_resource.full_hydrate(self.fk_bundle, request)
         elif hasattr(value, 'pk'):
             bundle = self.fk_resource.build_bundle(obj=value, request=request)
-            return self.fk_resource.full_dehydrate(bundle)
+            return self.fk_resource.full_dehydrate(bundle, request)
         else:
             raise ApiFieldError("The '%s' field has was given data that was not a URI and not a dictionary-alike: %s." % (self.instance_name, value))
 
@@ -609,10 +609,10 @@ class ToOneField(RelatedField):
         
         self.fk_resource = self.get_related_resource(foreign_obj)
         fk_bundle = Bundle(obj=foreign_obj, request=bundle.request)
-        return self.dehydrate_related(fk_bundle, self.fk_resource)
+        return self.dehydrate_related(fk_bundle, self.fk_resource, request)
     
-    def hydrate(self, bundle):
-        value = super(ToOneField, self).hydrate(bundle)
+    def hydrate(self, bundle, request):
+        value = super(ToOneField, self).hydrate(bundle, request)
         
         if value is None:
             return value
@@ -689,7 +689,7 @@ class ToManyField(RelatedField):
         
         return the_m2ms.all()
     
-    def dehydrate(self, bundle):
+    def dehydrate(self, bundle, request):
         if not bundle.obj or not bundle.obj.pk:
             if not self.null:
                 raise ApiFieldError("The model '%r' does not have a primary key and can not be used in a ToMany context." % bundle.obj)
@@ -716,14 +716,14 @@ class ToManyField(RelatedField):
             m2m_resource = self.get_related_resource(m2m)
             m2m_bundle = Bundle(obj=m2m, request=bundle.request)
             self.m2m_resources.append(m2m_resource)
-            m2m_dehydrated.append(self.dehydrate_related(m2m_bundle, m2m_resource))
+            m2m_dehydrated.append(self.dehydrate_related(m2m_bundle, m2m_resource, request))
         
         return m2m_dehydrated
     
-    def hydrate(self, bundle):
+    def hydrate(self, bundle, request):
         pass
     
-    def hydrate_m2m(self, bundle):
+    def hydrate_m2m(self, bundle, request):
         if self.readonly:
             return None
         
@@ -765,7 +765,7 @@ class TimeField(ApiField):
     help_text = 'A time as string. Ex: "20:05:23"'
 
     def dehydrate(self, obj, request):
-        return self.convert(super(TimeField, self).dehydrate(obj))
+        return self.convert(super(TimeField, self).dehydrate(obj, request))
 
     def convert(self, value):
         if isinstance(value, basestring):
@@ -780,8 +780,8 @@ class TimeField(ApiField):
         else:
             return datetime.time(dt.hour, dt.minute, dt.second)
 
-    def hydrate(self, bundle):
-        value = super(TimeField, self).hydrate(bundle)
+    def hydrate(self, bundle, request):
+        value = super(TimeField, self).hydrate(bundle, request)
         
         if value and not isinstance(value, datetime.time):
             value = self.to_time(value)

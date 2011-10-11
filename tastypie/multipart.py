@@ -4,7 +4,18 @@ Multipart uploads for everyone!
 @author: Michael Wu
 """
 
+import cgi
+import cStringIO
+
+from django.conf import settings
+from django.core.exceptions import SuspiciousOperation
+from django.http import BadHeaderError
 from django.http.multipartparser import *
+from django.http.multipartparser import LimitBytes, LazyStream, ChunkIter, Parser, RAW, FILE, FIELD, exhaust
+from django.utils.datastructures import MultiValueDict
+from django.utils.encoding import force_unicode
+from django.utils.text import unescape_entities
+from django.core.files.uploadhandler import StopUpload, SkipFile, StopFutureHandlers
 
 class HTTPAttachment(object):
     def __init__(self, content=None, headers=None):
@@ -22,6 +33,11 @@ class HTTPAttachment(object):
         
         self.has_content_body = content is not None
         self.raw_content = content
+        self._file = cStringIO.StringIO(content)
+        self.remaining = len(content)
+
+        print "Headers"
+        print headers
  
     def __str__(self):
         """HTTP attachment headers only."""
@@ -83,8 +99,22 @@ class HTTPAttachment(object):
     def _set_content(self, content):
         self.has_content_body = content is not None
         self.raw_content = content
+        self._file = cStringIO.StringIO(content)
+        self.remaining = len(content)
 
     content = property(_get_content, _set_content)
+    
+    def read(self, num_bytes=None):
+        """
+        Read data from the attachment.
+        """
+        if num_bytes is None:
+            num_bytes = self.remaining
+        else:
+            num_bytes = min(num_bytes, self.remaining)
+        self.remaining -= num_bytes
+        
+        return self._file.read(num_bytes)
 
 class MultiPartMixedParser(MultiPartParser):
     def parse(self):
@@ -100,8 +130,13 @@ class MultiPartMixedParser(MultiPartParser):
 
         encoding = self._encoding
         handlers = self._upload_handlers
+        
+        data = self._input_data.read()
+        import cStringIO
+        self._input_data = cStringIO.StringIO(data) 
 
         limited_input_data = LimitBytes(self._input_data, self._content_length)
+        
 
         # See if the handler will want to take care of the parsing.
         # This allows overriding everything if somebody wants it.
@@ -128,6 +163,9 @@ class MultiPartMixedParser(MultiPartParser):
 
         try:
             for item_type, meta_data, field_stream in Parser(stream, self._boundary):
+                print "ITEM"
+                print item_type
+                print meta_data
                 if old_field_name:
                     # We run this at the beginning of the next loop
                     # since we cannot be sure a file is complete until
@@ -148,6 +186,22 @@ class MultiPartMixedParser(MultiPartParser):
 
                 if item_type == FIELD:
                     if field_name is None:
+                        """
+                        Add to DATA array
+                        """
+                        if transfer_encoding == 'base64':
+                            raw_data = field_stream.read()
+                            try:
+                                data = str(raw_data).decode('base64')
+                            except:
+                                data = raw_data
+                        else:
+                            data = field_stream.read()
+                        
+                        # Provide the meta data so we can figure out what it was later
+                        wrapped_data = HTTPAttachment(data, meta_data)
+                        
+                        self._data.append(wrapped_data)
                         continue
                     
                     # This is a post field, we can just set it in the post
@@ -228,6 +282,8 @@ class MultiPartMixedParser(MultiPartParser):
                             data = raw_data
                     else:
                         data = field_stream.read()
+                        
+                    data = data.trim()
                     
                     # Provide the meta data so we can figure out what it was later
                     wrapped_data = HTTPAttachment(data, meta_data)

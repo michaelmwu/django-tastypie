@@ -209,9 +209,17 @@ class AttachmentFileField(FileField):
         
     def hydrate(self, obj, request):
         value = super(FileField, self).hydrate(obj, request)
-        field = value.get('attachment', None)
-        if field and request:
-            return request.FILES.get(field, None)
+        
+        if value:
+            if getattr(value, 'get', None):
+                field = value.get('attachment', None)
+                if field and request:
+                    return request.FILES.get(field, None)
+                
+                # Otherwise see if it has a url string 
+                return value.get('url', None)
+            else:
+                return value
         else:
             return None
 

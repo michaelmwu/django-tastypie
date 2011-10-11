@@ -43,6 +43,21 @@ class ReadOnlyAuthorization(Authorization):
         else:
             return None
 
+class OpenAuthorization(Authorization):
+    """
+    Default Authentication class for ``Resource`` objects.
+
+    Only allows GET requests.
+    """
+
+    def get_limits(self, request, _and, _or):
+        return True 
+
+    def is_authorized(self, request, object=None):
+        """
+        Allow anything.
+        """
+        return True
 
 class DjangoAuthorization(Authorization):
     """
@@ -74,7 +89,7 @@ class DjangoAuthorization(Authorization):
                 del permission_codes[key]
     
     def get_limits(self, request, _and, _or):
-        return is_authorized(self, request) is True
+        return self.is_authorized(self, request) is True
     
     def is_authorized(self, request, object=None):
         # cannot map request method to permission code name, so pass through

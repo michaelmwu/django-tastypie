@@ -592,6 +592,8 @@ class Resource(object):
         
         Mostly a hook, this uses the ``Serializer`` from ``Resource._meta``.
         """
+        print "DATA"
+        print request.DATA
         data = as_tuple(request.DATA or request)
 
         for item in data:
@@ -790,16 +792,16 @@ class Resource(object):
         # Keep going until we find a definitive result. A result of None means
         # keep going
         for authorizer in authorizers:
-            auth_result = self._meta.authorization.is_authorized(request, object)
+            auth_result = authorizer.is_authorized(request, object)
             
             if isinstance(auth_result, HttpResponse):
-                raise ImmediateHttpResponse(response=auth_result)
+                raise PermissionDenied('Permission denied')
             
             if auth_result is not None:
                 break
         
         if not auth_result:
-            raise ImmediateHttpResponse(response=HttpUnauthorized())
+            raise PermissionDenied('Permission denied')
     
     def is_authenticated(self, request):
         """
@@ -1438,12 +1440,18 @@ class Resource(object):
         Accepted).
         """
         deserialized = self.deserialize(request)
+        print "deserialized junk"
+        print deserialized
         deserialized = self.alter_deserialized_detail_data(request, deserialized)
         bundle = self.build_bundle(data=dict_strip_unicode_keys(deserialized), request=request)
         self.is_valid(bundle, request)
+        print "UPDATING WITH BUNDLE"
+        print bundle
         
         try:
+            print "Updating"
             updated_bundle = self.obj_update(bundle, request=request, **self.remove_api_resource_names(kwargs))
+            print "successs updating"
             
             if not self._meta.always_return_data:
                 return HttpNoContent()
@@ -1452,6 +1460,7 @@ class Resource(object):
                 updated_bundle = self.alter_detail_data_to_serialize(request, updated_bundle)
                 return self.create_response(request, updated_bundle, response_class=HttpAccepted)
         except (NotFound, MultipleObjectsReturned):
+            print "crap exception"
             updated_bundle = self.obj_create(bundle, request=request, **self.remove_api_resource_names(kwargs))
             location = self.get_resource_uri(updated_bundle)
             
@@ -1930,8 +1939,14 @@ class ModelResource(Resource):
         the instance.
         """
         try:
+            print "GETTING OBJ"
+            print kwargs
             base_object_list = self.get_object_list(request).filter(**kwargs)
+            print "BASE"
+            print base_object_list
             object_list = self.apply_authorization_limits(request, base_object_list)
+            print "OBJ"
+            print object_list
             stringified_kwargs = ', '.join(["%s=%s" % (k, v) for k, v in kwargs.items()])
             
             if len(object_list) <= 0:
@@ -1969,7 +1984,10 @@ class ModelResource(Resource):
         """
         A ORM-specific implementation of ``obj_update``.
         """
-        if not bundle.obj or not bundle.obj.pk:
+        print "OBJ UPDATE"
+        print "kwargs"
+        
+        if not bundle.obj or not bundle.obj.pk: 
             # Attempt to hydrate data from kwargs before doing a lookup for the object.
             # This step is needed so certain values (like datetime) will pass model validation.
             try:
@@ -1981,26 +1999,36 @@ class ModelResource(Resource):
                     (k, getattr(bundle.obj, k))
                     for k in kwargs.keys()
                     if getattr(bundle.obj, k) is not None))
+                print "success at hydration"
             except:
                 # if there is trouble hydrating the data, fall back to just
                 # using kwargs by itself (usually it only contains a "pk" key
                 # and this will work fine.
                 lookup_kwargs = kwargs
+                print "failed to lookup"
             try:
+                print "TRYING TO GET"
+                print lookup_kwargs
                 bundle.obj = self.obj_get(request, **lookup_kwargs)
             except ObjectDoesNotExist:
+                print "Does not exist?"
                 raise NotFound("A model instance matching the provided arguments could not be found.")
         
+        print "check auth"
         self.is_authorized(request, bundle.obj)
         
+        print "hydrating"
         bundle = self.full_hydrate(bundle, request)
 
+        print "saving fk"
         # Save FKs just in case.
         self.save_related(bundle)
 
+        print "saving obj"
         # Save the main object.
         bundle.obj.save()
         
+        print "hydrating m2m"
         # Now pick up the M2M bits.
         m2m_bundle = self.hydrate_m2m(bundle, request)
         self.save_m2m(m2m_bundle)

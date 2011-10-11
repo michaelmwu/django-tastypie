@@ -127,14 +127,16 @@ class MultiPartMixedParser(MultiPartParser):
         """
         # We have to import QueryDict down here to avoid a circular import.
         from django.http import QueryDict
+        
+        print "MULTIMIXED PARSING"
 
         encoding = self._encoding
         handlers = self._upload_handlers
         
         data = self._input_data.read()
-        import cStringIO
-        self._input_data = cStringIO.StringIO(data) 
-
+        print data
+        self._input_data = cStringIO.StringIO(data)
+        
         limited_input_data = LimitBytes(self._input_data, self._content_length)
         
 
@@ -161,9 +163,13 @@ class MultiPartMixedParser(MultiPartParser):
         old_field_name = None
         counters = [0] * len(handlers)
 
+        print "EACH ONE"
+        count = 0
+
         try:
             for item_type, meta_data, field_stream in Parser(stream, self._boundary):
-                print "ITEM"
+                count += 1
+                print "ITEM " + str(count)
                 print item_type
                 print meta_data
                 if old_field_name:
@@ -185,6 +191,7 @@ class MultiPartMixedParser(MultiPartParser):
                     field_name = force_unicode(field_name, encoding, errors='replace')
 
                 if item_type == FIELD:
+                    print "FIELD"
                     if field_name is None:
                         """
                         Add to DATA array
@@ -217,6 +224,7 @@ class MultiPartMixedParser(MultiPartParser):
                     self._post.appendlist(field_name,
                                           force_unicode(data, encoding, errors='replace'))
                 elif item_type == FILE:
+                    print "FILE"
                     if field_name is None:
                         continue
                     
@@ -273,6 +281,7 @@ class MultiPartMixedParser(MultiPartParser):
                         # Handle file upload completions on next iteration.
                         old_field_name = field_name
                 else:
+                    print "RAW?"
                     # If this is neither a FIELD or a FILE, add it to the DATA array
                     if transfer_encoding == 'base64':
                         raw_data = field_stream.read()
@@ -284,6 +293,7 @@ class MultiPartMixedParser(MultiPartParser):
                         data = field_stream.read()
                         
                     data = data.trim()
+                    print data
                     
                     # Provide the meta data so we can figure out what it was later
                     wrapped_data = HTTPAttachment(data, meta_data)

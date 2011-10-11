@@ -4,6 +4,7 @@ Monkey patches standard Django HTTP Requests to handle multipart uploads
 @author: Michael Wu
 """
 
+import cStringIO
 from pprint import pformat
 
 from django.http import HttpRequest, QueryDict, MultiValueDict, ImmutableList
@@ -100,7 +101,7 @@ class TastypieHTTPRequest(HttpRequest):
             return None
         elif hasattr(request, 'read'):
              return request
-        return StringIO(request.raw_post_data)
+        return cStringIO.StringIO(request.raw_post_data)
 
     def _mark_post_parse_error(self):
         self._data = []
@@ -132,7 +133,12 @@ class TastypieHTTPRequest(HttpRequest):
         if self.META.get('CONTENT_TYPE', '').startswith('multipart'):
             self._raw_post_data = ''
             try:
+                print "parsing file upload"
                 self._data, self._form, self._files = self.parse_file_upload(self.META, self)
+                print "parsed!"
+                print self._data
+                print self._form
+                print self._files
             except:
                 # An error occured while parsing POST data.  Since when
                 # formatting the error the request handler might access

@@ -1671,7 +1671,7 @@ class ModelResource(Resource):
         elif f.get_internal_type() in ('IntegerField', 'PositiveIntegerField', 'PositiveSmallIntegerField', 'SmallIntegerField'):
             result = IntegerField
         elif f.get_internal_type() in ('FileField', 'ImageField'):
-            result = FileField
+            result = AttachmentFileField
         elif f.get_internal_type() == 'TimeField':
             result = TimeField
         # TODO: Perhaps enable these via introspection. The reason they're not enabled

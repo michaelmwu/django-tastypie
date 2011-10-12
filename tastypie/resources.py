@@ -958,10 +958,10 @@ class Resource(object):
             if method:
                 bundle.data[field_name] = method(bundle)
         
-        bundle = self.dehydrate(bundle)
+        bundle = self.dehydrate(bundle, request)
         return bundle
     
-    def dehydrate(self, bundle):
+    def dehydrate(self, bundle, request):
         """
         A hook to allow a final manipulation of data once all fields/methods
         have built out the dehydrated data.

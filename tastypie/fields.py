@@ -611,7 +611,7 @@ class ToOneField(RelatedField):
                 return None
             
             if callable(foreign_obj):
-                foreign_obj = foreign_obj
+                foreign_obj = foreign_obj()
             
             obj = foreign_obj
         

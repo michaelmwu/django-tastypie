@@ -17,7 +17,7 @@ class Paginator(object):
     """
     def __init__(self, request_data, objects, resource_uri=None, limit=None, offset=0):
         """
-        Instantiates the ``Paginator`` and allows for some configuration.
+        Instantiates the ``Paginator`` and allowed for some configuration.
         
         The ``request_data`` argument ought to be a dictionary-like object.
         May provide ``limit`` and/or ``offset`` to override the defaults.

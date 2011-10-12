@@ -25,7 +25,7 @@ class HTTPAttachment(object):
         self._headers = {}
         
         if headers:
-            for header, value in headers.itemitems():
+            for header, value in headers.items():
                 header, value = self._convert_header(header, value)
                 self._headers[header.lower()] = (header, value)
         
@@ -133,10 +133,6 @@ class MultiPartMixedParser(MultiPartParser):
         encoding = self._encoding
         handlers = self._upload_handlers
         
-        data = self._input_data.read()
-        print data
-        self._input_data = cStringIO.StringIO(data)
-        
         limited_input_data = LimitBytes(self._input_data, self._content_length)
         
 
@@ -172,6 +168,14 @@ class MultiPartMixedParser(MultiPartParser):
                 print "ITEM " + str(count)
                 print item_type
                 print meta_data
+                
+                data = field_stream.read()
+                if len(data) < 1000:
+                    print "DATA"
+                    print data
+                
+                field_stream = cStringIO.StringIO(data)
+                
                 if old_field_name:
                     # We run this at the beginning of the next loop
                     # since we cannot be sure a file is complete until
@@ -204,6 +208,9 @@ class MultiPartMixedParser(MultiPartParser):
                                 data = raw_data
                         else:
                             data = field_stream.read()
+                        
+                        if len(meta_data) and not data or len(data.strip()) == 0:
+                            continue
                         
                         # Provide the meta data so we can figure out what it was later
                         wrapped_data = HTTPAttachment(data, meta_data)
@@ -291,14 +298,14 @@ class MultiPartMixedParser(MultiPartParser):
                             data = raw_data
                     else:
                         data = field_stream.read()
-                        
-                    data = data.trim()
-                    print data
+                    
+                    if len(meta_data) and not data or len(data.strip()) == 0:
+                        continue
                     
                     # Provide the meta data so we can figure out what it was later
                     wrapped_data = HTTPAttachment(data, meta_data)
-                    
                     self._data.append(wrapped_data)
+                    
         except StopUpload, e:
             if not e.connection_reset:
                 exhaust(limited_input_data)
@@ -312,11 +319,20 @@ class MultiPartMixedParser(MultiPartParser):
             if retval:
                 break
 
+        print "FINAL DATA"
+        print self._data
+
         if len(self._data) == 0:
             data = None
         elif len(self._data) == 1:
             data = self._data[0]
         else:
-            data = self._data 
-
+            data = self._data
+            
+        for item in data:
+            print "headers"
+            print item._headers
+            print "content"
+            print item.raw_content
+        
         return data, self._post, self._files

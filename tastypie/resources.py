@@ -592,7 +592,7 @@ class Resource(object):
         
         Mostly a hook, this uses the ``Serializer`` from ``Resource._meta``.
         """
-        print "DATA"
+        print "deserialize"
         print request.DATA
         data = as_tuple(request.DATA or request)
 
@@ -673,6 +673,8 @@ class Resource(object):
         throttling, method lookup) surrounding most CRUD interactions.
         """
         
+        print "UPGRADE"
+        
         # Upgrade request to a TastypieHTTPRequest
         self.wrap_request(request)
         
@@ -693,8 +695,10 @@ class Resource(object):
         #self.is_authorized(request)
         self.throttle_check(request)
         
+        print "CONVERT"
         # All clear. Process the request.
         request = convert_post_to_put(request)
+        print "CONVERT OKAY?"
         response = method(request, **kwargs)
         
         # Add the throttled request.
@@ -764,7 +768,7 @@ class Resource(object):
         request_method = request.method.lower()
         
         if request_method == "options":
-            raise MethodNotAllowed(allows)
+            raise MethodNotAllowed(allowed)
         
         if not request_method in allowed:
             if action:
@@ -1389,6 +1393,7 @@ class Resource(object):
         Return ``HttpAccepted`` (202 Accepted) if
         ``Meta.always_return_data = True``.
         """
+        print "PUT LIST"
         deserialized = self.deserialize(request)
         deserialized = self.alter_deserialized_list_data(request, deserialized)
         
@@ -2190,14 +2195,13 @@ def convert_post_to_put(request):
             del request._post
             del request._files
         
-        try:
-            request.method = "POST"
-            request._load_post_and_files()
-            request.method = "PUT"
-        except AttributeError:
-            request.META['REQUEST_METHOD'] = 'POST'
-            request._load_post_and_files()
-            request.META['REQUEST_METHOD'] = 'PUT'
+        request.method = "POST"
+        request.META['REQUEST_METHOD'] = 'POST'
+        
+        request._load_post_and_files()
+        
+        request.method = "PUT"
+        request.META['REQUEST_METHOD'] = 'PUT'
             
         request.PUT = request.POST
     

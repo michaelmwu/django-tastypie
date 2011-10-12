@@ -46,11 +46,11 @@ class MethodNotAllowed(TastypieError):
     """
     status_code = httplib.METHOD_NOT_ALLOWED
     
-    def __init__(self, allows, msg=None, headers={}):
-        headers['Allow'] = ','.join(map(str.upper, allows))
+    def __init__(self, allowed, msg=None, headers={}):
+        headers['Allow'] = ','.join(map(str.upper, allowed))
         
         if not msg:
-            msg = 'Allowed methods: ' + ', '.join(map(str.upper, allows))
+            msg = 'Allowed methods: ' + ', '.join(map(str.upper, allowed))
         
         super(MethodNotAllowed, self).__init__(msg, headers=headers)
 

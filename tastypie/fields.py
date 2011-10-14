@@ -663,6 +663,7 @@ class ToManyField(RelatedField):
             if not self.null:
                 raise ApiFieldError("The model '%r' does not have a primary key and can not be used in a ToMany context." % bundle.obj)
             
+            print "primary key error"
             return []
         
         if isinstance(self.attribute, basestring):
@@ -679,12 +680,12 @@ class ToManyField(RelatedField):
                 if not the_m2ms:
                     if not self.null:
                         raise ApiFieldError("The model '%r' has an empty attribute '%s' and doesn't allow a null value." % (bundle.obj, self.attribute))
-                
-                return None
+                    
+                    return []
             
                 if callable(the_m2ms):
-                    the_m2ms = the_m2ms
-            
+                    the_m2ms = the_m2ms()
+        
                 obj = the_m2ms
         elif callable(self.attribute):
             the_m2ms = self.attribute(bundle)
@@ -692,7 +693,7 @@ class ToManyField(RelatedField):
         if not the_m2ms:
             if not self.null:
                 raise ApiFieldError("The model '%r' has an empty attribute '%s' and doesn't allow a null value." % (bundle.obj, self.attribute))
-            
+        
             return []
         
         return the_m2ms.all()

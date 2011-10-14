@@ -117,8 +117,11 @@ class ResourceOptions(object):
         if overrides.get('detail_allowed_methods', None) is None:
             overrides['detail_allowed_methods'] = allowed_methods
         
-        if overrides.get('related_allowed_methods', None) is None:
-            overrides['related_allowed_methods'] = overrides['detail_allowed_methods']
+        if overrides.get('related_list_allowed_methods', None) is None:
+            overrides['related_list_allowed_methods'] = overrides['detail_allowed_methods']
+        
+        if overrides.get('related_detail_allowed_methods', None) is None:
+            overrides['related_detail_allowed_methods'] = overrides['detail_allowed_methods']
         
         return object.__new__(type('ResourceOptions', (cls,), overrides))
 
@@ -428,7 +431,7 @@ class Resource(object):
         """
         def related(name, field):
             # TODO: Further nesting
-            return self.url(r"(?P<related_name>%s)" % name, self.wrap_view('dispatch_related'), name="api_dispatch_nested")
+            return self.url(r"(?P<related_name>%s)" % name, self.wrap_view('dispatch_related'), name="api_dispatch_related")
         
         return [related(*item) for item in self._related.items()]
     
@@ -506,7 +509,13 @@ class Resource(object):
         objects = related_field.objects(bundle)
         fk_resource = related_field.to_class()
         
+        print "NON SORTED"
+        print objects
+        
         sorted_objects = fk_resource.apply_sorting(objects, options=request.GET)
+        
+        print "SORTED OBJETS"
+        print sorted_objects
         
         paginator = fk_resource._meta.paginator_class(request.GET, sorted_objects, resource_uri=fk_resource.get_resource_list_uri(), limit=fk_resource._meta.limit)
         to_be_serialized = paginator.page()
@@ -532,28 +541,7 @@ class Resource(object):
     
     def delete_related_list(self, request, related_field, obj, **kwargs):
         pass
-    
-    def dispatch_nested(self, request, nesting, **kwargs):
-        """
-        Dispatch a nested resource.
-        """
-        try:
-            obj = self.cached_obj_get(request=request, **self.remove_api_resource_names(kwargs))
-        except ObjectDoesNotExist:
-            return HttpNotFound()
-        except MultipleObjectsReturned:
-            return HttpMultipleChoices("More than one resource is found at this URI.")
         
-        view, args, view_kwargs = resolve(self.nested_urls()) 
-        
-        # Get the resource
-        nested_key = view_kwargs['tastypie_nested_key']
-        del view_kwargs['tastypie_nested_key']
-        view_kwargs[nested_key] = obj
-        
-        # Call the view with the inserted parent key
-        view(*args, **view_kwargs)
-    
     def determine_format(self, request):
         """
         Used to determine the desired format.
@@ -957,6 +945,24 @@ class Resource(object):
             
             if method:
                 bundle.data[field_name] = method(bundle)
+        
+        # Add links to related fields
+        for related_name, related_field in self._related.items():
+            if not related_name in bundle.data:
+                kwargs = {
+                    'resource_name': self._meta.resource_name,
+                    'related_name': related_name
+                }
+                
+                if isinstance(bundle, Bundle):
+                    kwargs['pk'] = bundle.obj.pk
+                else:
+                    kwargs['pk'] = bundle.id
+        
+                if self._meta.api_name is not None:
+                    kwargs['api_name'] = self._meta.api_name
+                
+                bundle.data[related_name] = reverse('api_dispatch_related', kwargs=kwargs)
         
         bundle = self.dehydrate(bundle, request)
         return bundle
